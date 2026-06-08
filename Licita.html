@@ -9605,6 +9605,16 @@ async function _rehydrateRecord(row, withBlobs) {
 // dbOpen: no-op (compatibilidad). Garantiza cliente + sesión.
 async function dbOpen() { return supa(); }
 
+// Lista SOLO los ids del usuario (sin data) — consulta ligera e instantánea.
+// Útil para contar docs/chat/apu por licitación sin descargar los registros.
+async function dbListIds() {
+  const uid = await _supaUserId();
+  const { data, error } = await supa().from('kv_store')
+    .select('id').eq('user_id', uid);
+  if (error) throw error;
+  return (data || []).map(r => r.id);
+}
+
 // Asegura que un objeto doc (de state.docs) tenga su Blob real.
 // Si .blob es un marcador lazy (__supafile__), lo descarga desde Storage.
 // Devuelve un Blob o null. NO muta el objeto original salvo cachear el blob.
@@ -25843,7 +25853,7 @@ async function cargarLicitaciones() {
     const {id, originalId, ...rest} = l;
     return {id: originalId || id.replace('licitacion_', ''), ...rest};
   });
-  renderPanelLicitaciones();
+  await renderPanelLicitaciones();
 }
 
 // --- Renderizar el panel de cards de licitaciones ---
@@ -25918,12 +25928,12 @@ function formatMM(monto, moneda) {
   return `$${(monto/1_000_000).toFixed(0)} MM`;
 }
 
-async function enriquecerLicitacion(lic) {
+async function enriquecerLicitacion(lic, idsIndex) {
   if (PANEL_STATE.enrichCache[lic.id]) return PANEL_STATE.enrichCache[lic.id];
   const [presupuesto, ubicacion, stats] = await Promise.all([
     cargarPresupuesto(lic.id),
     cargarUbicacion(lic.id),
-    obtenerStatsLicitacion(lic.id),
+    obtenerStatsLicitacion(lic.id, idsIndex),
   ]);
   const enriched = {presupuesto, ubicacion, stats, montoNumero: montoPresupuestoNumero(presupuesto)};
   PANEL_STATE.enrichCache[lic.id] = enriched;
@@ -25940,10 +25950,15 @@ async function renderPanelLicitaciones() {
   const count = $('licCount');
   count.textContent = `${APP_STATE.licitaciones.length} licitación${APP_STATE.licitaciones.length !== 1 ? 'es' : ''}`;
 
+  // Cargar el índice de ids UNA sola vez (ligero) y reutilizarlo para todas
+  // las licitaciones, en vez de descargar todos los registros por cada una.
+  let _idsIndex = [];
+  try { _idsIndex = await dbListIds(); } catch(e) { _idsIndex = []; }
+
   // Cargar info enriquecida en paralelo
   const enriched = await Promise.all(APP_STATE.licitaciones.map(async lic => ({
     lic,
-    enr: await enriquecerLicitacion(lic),
+    enr: await enriquecerLicitacion(lic, _idsIndex),
   })));
 
   // Aplicar filtros
@@ -27028,15 +27043,16 @@ function asegurarPanelListeners() {
   inicializarPanelListeners();
 }
 
-async function obtenerStatsLicitacion(licId) {
-  // Contar docs, partidas (si hay APU generado), consultas (mensajes del usuario en chat)
+async function obtenerStatsLicitacion(licId, idsIndex) {
+  // Calcula stats SIN descargar registros: usa un índice de ids (lista de strings).
+  // Si no se pasa el índice, lo pide una vez (ligero, solo ids).
   try {
-    const all = await dbGetAll();
-    const docs = all.filter(r => r && r.id && r.id.startsWith(`doc_${licId}_`)).length;
-    const chatRecord = all.find(r => r && r.id === `chat_${licId}`);
-    const consultas = chatRecord && chatRecord.messages ? chatRecord.messages.filter(m => m.role === 'user').length : 0;
-    const apuRecord = all.find(r => r && r.id === `apu_${licId}`);
-    const partidas = apuRecord ? apuRecord.partidas || 0 : 0;
+    const ids = idsIndex || await dbListIds();
+    const docs = ids.filter(id => id && id.startsWith(`doc_${licId}_`)).length;
+    // partidas/consultas: para el panel solo importa si hay (>0). Se confirma
+    // el detalle exacto al entrar a la licitación.
+    const partidas = ids.includes(`apu_${licId}`) ? 1 : 0;
+    const consultas = ids.includes(`chat_${licId}`) ? 1 : 0;
     return {docs, partidas, consultas};
   } catch (e) { return {docs:0, partidas:0, consultas:0}; }
 }
