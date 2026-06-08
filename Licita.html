@@ -9498,6 +9498,8 @@ const TAMANO_MAX_MB = 50;
 const SUPABASE_URL = 'https://vpablmvizsbgvnmbsssq.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZwYWJsbXZpenNiZ3ZubWJzc3NxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2ODExNzYsImV4cCI6MjA5NjI1NzE3Nn0.c2QV9_0PMb8BJyoEHZCbii3T-PjPwZYVA13Cogr2odU';
 const SUPA_BUCKET = 'binarios';
+// MODO EQUIPO: todos comparten el mismo espacio de datos (Quilín).
+const TEAM_ID = 'd24996de-9667-4ae8-82fa-6e353028ada5';
 
 let _supa = null;
 function supa() {
@@ -9535,8 +9537,7 @@ function _isBlob(v) { return (typeof Blob !== 'undefined') && (v instanceof Blob
 
 // Sube un Blob al bucket en {user_id}/{recId}/{prop} y devuelve un descriptor.
 async function _supaUploadBlob(recId, prop, blob) {
-  const uid = await _supaUserId();
-  const path = `${uid}/${encodeURIComponent(recId)}/${encodeURIComponent(prop)}`;
+  const path = `${TEAM_ID}/${encodeURIComponent(recId)}/${encodeURIComponent(prop)}`;
   const { error } = await supa().storage.from(SUPA_BUCKET)
     .upload(path, blob, { upsert: true, contentType: blob.type || 'application/octet-stream' });
   if (error) throw error;
@@ -9557,8 +9558,7 @@ async function _supaDownloadBlob(descriptor) {
 // Borra todos los binarios asociados a un registro.
 async function _supaDeleteBlobsOf(recId) {
   try {
-    const uid = await _supaUserId();
-    const prefix = `${uid}/${encodeURIComponent(recId)}`;
+    const prefix = `${TEAM_ID}/${encodeURIComponent(recId)}`;
     const { data: list } = await supa().storage.from(SUPA_BUCKET).list(prefix);
     if (list && list.length) {
       const paths = list.map(f => `${prefix}/${f.name}`);
@@ -9605,12 +9605,16 @@ async function _rehydrateRecord(row, withBlobs) {
 // dbOpen: no-op (compatibilidad). Garantiza cliente + sesión.
 async function dbOpen() { return supa(); }
 
-// Lista SOLO los ids del usuario (sin data) — consulta ligera e instantánea.
-// Útil para contar docs/chat/apu por licitación sin descargar los registros.
+// === MODO EQUIPO COMPARTIDO (Quilín) ===
+// Todos los usuarios del equipo leen y escriben sobre el MISMO espacio de datos,
+// identificado por TEAM_ID (definido arriba). Así no se duplican registros y
+// todos ven las mismas licitaciones. Las reglas RLS ya permiten a cualquier
+// usuario autenticado acceder a estas filas.
+
+// Lista SOLO los ids del equipo (sin data) — consulta ligera e instantánea.
 async function dbListIds() {
-  const uid = await _supaUserId();
   const { data, error } = await supa().from('kv_store')
-    .select('id').eq('user_id', uid);
+    .select('id').eq('user_id', TEAM_ID);
   if (error) throw error;
   return (data || []).map(r => r.id);
 }
@@ -9634,30 +9638,27 @@ async function _asegurarBlob(doc) {
 
 async function dbPut(record) {
   if (!record || record.id == null) throw new Error('dbPut: record sin id.');
-  const uid = await _supaUserId();
   const { data, blobs } = _splitRecord(record);
   // Subir blobs y reemplazarlos por descriptores
   for (const b of blobs) {
     data[b.prop] = await _supaUploadBlob(record.id, b.prop, b.blob);
   }
   const { error } = await supa().from('kv_store')
-    .upsert({ user_id: uid, id: String(record.id), data }, { onConflict: 'user_id,id' });
+    .upsert({ user_id: TEAM_ID, id: String(record.id), data }, { onConflict: 'user_id,id' });
   if (error) throw error;
 }
 
 async function dbGet(id) {
-  const uid = await _supaUserId();
   const { data, error } = await supa().from('kv_store')
-    .select('data').eq('user_id', uid).eq('id', String(id)).maybeSingle();
+    .select('data').eq('user_id', TEAM_ID).eq('id', String(id)).maybeSingle();
   if (error) throw error;
   if (!data) return undefined;
   return await _rehydrateRecord(data, true); // dbGet siempre trae binarios reales
 }
 
 async function dbGetAll(withBlobs) {
-  const uid = await _supaUserId();
   const { data, error } = await supa().from('kv_store')
-    .select('data').eq('user_id', uid);
+    .select('data').eq('user_id', TEAM_ID);
   if (error) throw error;
   if (!data) return [];
   const out = [];
@@ -9666,29 +9667,27 @@ async function dbGetAll(withBlobs) {
 }
 
 async function dbDelete(id) {
-  const uid = await _supaUserId();
   await _supaDeleteBlobsOf(String(id));
   const { error } = await supa().from('kv_store')
-    .delete().eq('user_id', uid).eq('id', String(id));
+    .delete().eq('user_id', TEAM_ID).eq('id', String(id));
   if (error) throw error;
 }
 
 async function dbClear() {
-  const uid = await _supaUserId();
-  // Borrar todos los binarios del usuario
+  // Borrar todos los binarios del equipo
   try {
-    const { data: list } = await supa().storage.from(SUPA_BUCKET).list(uid);
+    const { data: list } = await supa().storage.from(SUPA_BUCKET).list(TEAM_ID);
     if (list && list.length) {
       for (const folder of list) {
-        const { data: sub } = await supa().storage.from(SUPA_BUCKET).list(`${uid}/${folder.name}`);
+        const { data: sub } = await supa().storage.from(SUPA_BUCKET).list(`${TEAM_ID}/${folder.name}`);
         if (sub && sub.length) {
           await supa().storage.from(SUPA_BUCKET)
-            .remove(sub.map(f => `${uid}/${folder.name}/${f.name}`));
+            .remove(sub.map(f => `${TEAM_ID}/${folder.name}/${f.name}`));
         }
       }
     }
   } catch (e) { /* silencioso */ }
-  const { error } = await supa().from('kv_store').delete().eq('user_id', uid);
+  const { error } = await supa().from('kv_store').delete().eq('user_id', TEAM_ID);
   if (error) throw error;
 }
 
@@ -25828,18 +25827,16 @@ async function dbPutLicitacion(lic) {
 async function dbGetAllLicitaciones() {
   // Filtra en el servidor (solo trae registros licitacion_*, no los 158).
   // Las licitaciones no tienen Blobs, así que devolvemos data directo.
-  const uid = await _supaUserId();
   const { data, error } = await supa().from('kv_store')
-    .select('data').eq('user_id', uid).like('id', 'licitacion_%');
+    .select('data').eq('user_id', TEAM_ID).like('id', 'licitacion_%');
   if (error) throw error;
   return (data || []).map(row => row.data).filter(Boolean);
 }
 async function dbDeleteLicitacion(licId) {
   // Borrar la licitación + todos sus docs + su chat + análisis.
   // Filtra en el servidor (solo trae los ids relacionados, no los 158).
-  const uid = await _supaUserId();
   const { data } = await supa().from('kv_store')
-    .select('id').eq('user_id', uid)
+    .select('id').eq('user_id', TEAM_ID)
     .or(`id.eq.licitacion_${licId},id.eq.chat_${licId},id.eq.apu_${licId},id.like.doc_${licId}_%,id.like.analisis_${licId}_%`);
   for (const row of (data || [])) {
     if (row && row.id) await dbDelete(row.id);
