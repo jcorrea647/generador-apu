@@ -318,6 +318,9 @@
     from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
   }
+  @keyframes licSpin {
+    to { transform: rotate(360deg); }
+  }
 
   /* ============ CARD ============ */
   .card {
@@ -5920,6 +5923,12 @@
 
 <!-- ============ PANTALLA: PANEL DE LICITACIONES ============ -->
 <div class="licitaciones-screen" id="licitacionesScreen">
+  <!-- Overlay de carga inicial -->
+  <div id="licLoadingOverlay" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(247,245,239,0.96);align-items:center;justify-content:center;flex-direction:column;font-family:'Inter',sans-serif;">
+    <div style="width:54px;height:54px;border:5px solid #d9e2dc;border-top-color:#1f3a2e;border-radius:50%;animation:licSpin 0.9s linear infinite;"></div>
+    <div style="margin-top:20px;font-size:16px;font-weight:600;color:#1f3a2e;">Cargando tus licitaciones…</div>
+    <div style="margin-top:6px;font-size:13px;color:#7a8a82;">Recuperando datos desde la nube, un momento</div>
+  </div>
   <header class="lic-topbar">
     <div class="lic-brand">
       <div class="lic-brand-logo">Generador APU</div>
@@ -28469,11 +28478,14 @@ if (_restoreBtn && _restoreInput) {
 
 // --- Inicialización ---
 async function iniciarApp() {
+  const _ov = document.getElementById('licLoadingOverlay');
+  if (_ov) _ov.style.display = 'flex';
   try {
     // PRIORIDAD: cargar y mostrar las licitaciones PRIMERO, para que el
     // usuario las vea de inmediato y no perciba una pantalla vacía.
     await cargarLicitaciones();
     console.log('[iniciarApp] licitaciones encontradas:', APP_STATE.licitaciones.length);
+    if (_ov) _ov.style.display = 'none'; // ocultar overlay: ya hay licitaciones en pantalla
 
     // El resto de datasets (pozos, agua, botaderos, fichas) se cargan en
     // SEGUNDO PLANO y en PARALELO. No bloquean la vista de licitaciones.
@@ -28533,6 +28545,8 @@ async function iniciarApp() {
     }
   } catch (e) {
     console.error('[iniciarApp] Error:', e);
+    const _ov2 = document.getElementById('licLoadingOverlay');
+    if (_ov2) _ov2.style.display = 'none';
     alert('Error al inicializar la app: ' + e.message);
   }
 }
