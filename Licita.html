@@ -6247,6 +6247,8 @@
         <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-mute);margin-bottom:8px;padding:0 4px;">Temas</div>
         <div id="consultaTemasList" style="display:flex;flex-direction:column;gap:4px;"></div>
         <button class="btn-secondary" id="consultaNuevoTemaBtn" style="margin-top:10px;width:100%;font-size:12px;">+ Nuevo tema</button>
+        <div style="border-top:1px dashed var(--border-soft);margin:10px 0;"></div>
+        <button id="proveedoresBtn" style="width:100%;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🏢 Proveedores</button>
       </div>
 
       <!-- Contenido del tema activo -->
@@ -28044,8 +28046,17 @@ function renderConsultaTemas() {
     </button>`;
   }).join('');
   cont.querySelectorAll('.consulta-tema-btn').forEach(btn => {
-    btn.onclick = () => { consultaTemaActivoId = btn.dataset.id; renderConsultaTemas(); renderConsultaTemaContenido(); };
+    btn.onclick = () => { _vistaProveedoresActiva = false; consultaTemaActivoId = btn.dataset.id; renderConsultaTemas(); renderConsultaTemaContenido(); };
   });
+  // Reflejar estado del botón Proveedores
+  const pbtn = $('proveedoresBtn');
+  if (pbtn) {
+    if (_vistaProveedoresActiva) {
+      pbtn.style.background = 'var(--accent)'; pbtn.style.color = '#FFFFFF'; pbtn.style.borderColor = 'var(--accent)';
+    } else {
+      pbtn.style.background = '#EAF3EC'; pbtn.style.color = 'var(--accent)'; pbtn.style.borderColor = '#C7D9C9';
+    }
+  }
 }
 
 function renderConsultaTemaContenido() {
@@ -28447,6 +28458,296 @@ if (_consultaNuevoTema) _consultaNuevoTema.addEventListener('click', async () =>
   const t = { id: 'tema_' + Date.now(), nombre: nombre.trim(), docs: [] };
   consultaTemas.push(t); consultaTemaActivoId = t.id;
   await guardarConsultaTemas(); renderConsultaTemas(); renderConsultaTemaContenido();
+});
+
+// ============ PROVEEDORES (dentro de Consulta de Referencia, panel compartido del equipo) ============
+// Estado: persiste en 'proveedores_ref'. Cada proveedor:
+//   { id, nombre, rut, rubro, contacto, telefono, email, direccion, notas,
+//     cotizaciones:[{id, descripcion, precio, unidad, fecha}],
+//     docs:[{id, name, size}] }   ← los blobs van como registros propios 'provdoc_*'
+let proveedoresLista = [];
+let proveedorActivoId = null;
+let proveedorBusqueda = '';
+let _vistaProveedoresActiva = false;
+
+async function cargarProveedores() {
+  try {
+    const rec = await dbGet('proveedores_ref');
+    if (rec && Array.isArray(rec.proveedores)) proveedoresLista = rec.proveedores;
+  } catch (e) { console.warn('[proveedores] error cargando:', e); }
+}
+
+async function guardarProveedores() {
+  try { await dbPut({ id: 'proveedores_ref', proveedores: proveedoresLista }); }
+  catch (e) { console.error('[proveedores] error guardando:', e); }
+}
+
+function _provIniciales(nombre) {
+  const w = (nombre || '?').trim().split(/\s+/).filter(Boolean);
+  if (!w.length) return '?';
+  return (w[0][0] + (w[1] ? w[1][0] : '')).toUpperCase();
+}
+
+function abrirVistaProveedores() {
+  _vistaProveedoresActiva = true;
+  if (!proveedorActivoId && proveedoresLista.length) proveedorActivoId = proveedoresLista[0].id;
+  renderConsultaTemas();
+  (async () => { await cargarProveedores(); if (!proveedorActivoId && proveedoresLista.length) proveedorActivoId = proveedoresLista[0].id; renderProveedores(); })();
+}
+
+function cerrarVistaProveedores() {
+  _vistaProveedoresActiva = false;
+  renderConsultaTemas();
+  renderConsultaTemaContenido();
+}
+
+function renderProveedores() {
+  const cont = $('consultaTemaContenido');
+  if (!cont) return;
+
+  const q = proveedorBusqueda.trim().toLowerCase();
+  const filtrados = q ? proveedoresLista.filter(p =>
+    (p.nombre || '').toLowerCase().includes(q) || (p.rubro || '').toLowerCase().includes(q) || (p.rut || '').toLowerCase().includes(q)
+  ) : proveedoresLista;
+
+  const prov = proveedoresLista.find(p => p.id === proveedorActivoId) || filtrados[0] || null;
+
+  const listaHtml = filtrados.length ? filtrados.map(p => {
+    const activo = prov && p.id === prov.id;
+    return `<button class="prov-item" data-id="${p.id}" style="text-align:left;padding:9px 11px;border-radius:8px;cursor:pointer;font-family:inherit;border:1px solid ${activo?'var(--accent)':'var(--border)'};background:${activo?'var(--accent-lightest)':'var(--surface)'};">
+      <div style="font-weight:600;font-size:13px;color:${activo?'var(--accent-dark)':'var(--text)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(p.nombre || 'Sin nombre')}</div>
+      <div style="font-size:11px;color:var(--text-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(p.rubro || '—')}</div>
+    </button>`;
+  }).join('') : '<div style="padding:14px;text-align:center;color:var(--text-mute);font-size:12.5px;">Sin proveedores. Crea el primero con “Nuevo proveedor”.</div>';
+
+  let fichaHtml;
+  if (!prov) {
+    fichaHtml = '<div style="padding:30px;text-align:center;color:var(--text-mute);font-size:13px;">Selecciona o crea un proveedor.</div>';
+  } else {
+    const cotsHtml = (prov.cotizaciones && prov.cotizaciones.length) ? `
+      <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:12px;">
+        <table style="width:100%;font-size:12px;border-collapse:collapse;">
+          <tr style="background:var(--surface-warm);">
+            <th style="text-align:left;padding:6px 9px;font-weight:600;color:var(--text-soft);">Descripción</th>
+            <th style="text-align:right;padding:6px 9px;font-weight:600;color:var(--text-soft);">Precio</th>
+            <th style="text-align:left;padding:6px 9px;font-weight:600;color:var(--text-soft);">Unidad</th>
+            <th style="text-align:left;padding:6px 9px;font-weight:600;color:var(--text-soft);">Fecha</th>
+            <th style="padding:6px 9px;"></th>
+          </tr>
+          ${prov.cotizaciones.map(c => `<tr style="border-top:1px solid var(--border-soft);">
+            <td style="padding:6px 9px;">${escapeHtml(c.descripcion || '—')}</td>
+            <td style="padding:6px 9px;text-align:right;font-variant-numeric:tabular-nums;">${c.precio != null && c.precio !== '' ? formatPrecioCLP(c.precio) : '—'}</td>
+            <td style="padding:6px 9px;">${escapeHtml(c.unidad || '')}</td>
+            <td style="padding:6px 9px;">${escapeHtml(c.fecha || '')}</td>
+            <td style="padding:6px 9px;text-align:center;"><button class="prov-cot-del" data-cid="${c.id}" title="Quitar cotización" style="border:none;background:none;cursor:pointer;color:var(--text-mute);font-size:14px;">✕</button></td>
+          </tr>`).join('')}
+        </table>
+      </div>` : '<div style="padding:12px;text-align:center;color:var(--text-mute);font-size:12px;border:1px dashed var(--border);border-radius:8px;margin-bottom:12px;">Aún no hay cotizaciones.</div>';
+
+    const docsHtml = (prov.docs && prov.docs.length) ? prov.docs.map(d => {
+      const kb = d.size ? (d.size > 1048576 ? (d.size/1048576).toFixed(1)+' MB' : Math.round(d.size/1024)+' KB') : '';
+      const lower = (d.name||'').toLowerCase();
+      const icon = lower.endsWith('.pdf') ? '📄' : (lower.endsWith('.xlsx')||lower.endsWith('.xls')) ? '📊' : (lower.endsWith('.docx')||lower.endsWith('.doc')) ? '📝' : '📎';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--border);border-radius:7px;font-size:12px;">
+        <span>${icon}</span>
+        <button class="prov-doc-open" data-did="${d.id}" data-name="${escapeHtml(d.name)}" title="Abrir / descargar" style="flex:1;text-align:left;border:none;background:none;cursor:pointer;color:var(--accent);font-family:inherit;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(d.name)}</button>
+        <span style="color:var(--text-mute);">${kb}</span>
+        <button class="prov-doc-del" data-did="${d.id}" title="Quitar documento" style="border:none;background:none;cursor:pointer;color:var(--text-mute);font-size:14px;">✕</button>
+      </div>`;
+    }).join('') : '<div style="padding:10px;text-align:center;color:var(--text-mute);font-size:12px;">Sin documentos adjuntos.</div>';
+
+    const row = (label, icon, val, link) => {
+      if (!val) return '';
+      let v = escapeHtml(val);
+      if (link === 'tel') v = `<a href="tel:${escapeHtml(val.replace(/[^0-9+]/g,''))}">${v}</a>`;
+      else if (link === 'mail') v = `<a href="mailto:${escapeHtml(val)}">${v}</a>`;
+      return `<tr><td style="color:var(--text-soft);padding:3px 0;width:95px;">${icon} ${label}</td><td style="padding:3px 0;">${v}</td></tr>`;
+    };
+
+    fichaHtml = `
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+        <div style="width:42px;height:42px;border-radius:50%;background:var(--accent-lightest);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:var(--accent-dark);flex-shrink:0;">${escapeHtml(_provIniciales(prov.nombre))}</div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;font-size:15px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(prov.nombre || 'Sin nombre')}</div>
+          <div style="font-size:12px;color:var(--text-soft);">${prov.rut ? 'RUT '+escapeHtml(prov.rut)+' · ' : ''}${escapeHtml(prov.rubro || 'Sin rubro')}</div>
+        </div>
+        <button class="prov-editar" style="font-size:11px;border:1px solid var(--border);background:var(--surface);border-radius:6px;padding:5px 9px;cursor:pointer;font-family:inherit;">✏️ Editar</button>
+        <button class="prov-eliminar" style="font-size:11px;border:1px solid var(--border);background:var(--surface);border-radius:6px;padding:5px 9px;cursor:pointer;font-family:inherit;color:#DC2626;">🗑</button>
+      </div>
+
+      <table style="width:100%;font-size:12.5px;margin-bottom:16px;">
+        ${row('Contacto','👤',prov.contacto)}
+        ${row('Teléfono','📞',prov.telefono,'tel')}
+        ${row('Email','✉️',prov.email,'mail')}
+        ${row('Dirección','📍',prov.direccion)}
+      </table>
+      ${prov.notas ? `<div style="font-size:12px;color:var(--text-soft);background:var(--surface-warm);border-radius:7px;padding:9px 11px;margin-bottom:16px;line-height:1.5;">📝 ${escapeHtml(prov.notas)}</div>` : ''}
+
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:8px;">💲 Cotizaciones / precios</div>
+      ${cotsHtml}
+      <button class="prov-cot-add" style="font-size:11px;border:1px solid var(--border);background:var(--surface);border-radius:6px;padding:5px 10px;cursor:pointer;font-family:inherit;margin-bottom:18px;">+ Agregar cotización</button>
+
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:8px;">📎 Documentos adjuntos</div>
+      <div style="display:flex;flex-direction:column;gap:6px;">${docsHtml}</div>
+      <button class="prov-doc-add" style="font-size:11px;border:1px solid var(--border);background:var(--surface);border-radius:6px;padding:5px 10px;cursor:pointer;font-family:inherit;margin-top:8px;">⬆ Cargar documento</button>`;
+  }
+
+  cont.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+      <div style="flex:1;">
+        <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-serif);">🏢 Proveedores</div>
+        <div style="font-size:12px;color:var(--text-soft);">${proveedoresLista.length} proveedor(es) · compartido con el equipo</div>
+      </div>
+      <input type="text" id="provBusqueda" value="${escapeHtml(proveedorBusqueda)}" placeholder="Buscar proveedor o rubro…" style="width:200px;padding:7px 10px;border:1px solid var(--border);border-radius:7px;font-family:inherit;font-size:12.5px;background:var(--surface);color:var(--text);" />
+      <button class="btn-primary prov-nuevo" style="font-size:12px;">+ Nuevo proveedor</button>
+    </div>
+    <div style="display:grid;grid-template-columns:220px 1fr;gap:14px;align-items:start;">
+      <div id="provLista" style="display:flex;flex-direction:column;gap:6px;">${listaHtml}</div>
+      <div id="provFicha" style="min-width:0;">${fichaHtml}</div>
+    </div>`;
+
+  // --- Wiring ---
+  const busq = $('provBusqueda');
+  if (busq) busq.oninput = () => { proveedorBusqueda = busq.value; const pos = busq.selectionStart; renderProveedores(); const nb = $('provBusqueda'); if (nb){ nb.focus(); try{ nb.setSelectionRange(pos,pos);}catch(e){} } };
+
+  cont.querySelectorAll('.prov-item').forEach(b => b.onclick = () => { proveedorActivoId = b.dataset.id; renderProveedores(); });
+  const nuevoBtn = cont.querySelector('.prov-nuevo');
+  if (nuevoBtn) nuevoBtn.onclick = () => abrirFormProveedor(null);
+  const edBtn = cont.querySelector('.prov-editar');
+  if (edBtn && prov) edBtn.onclick = () => abrirFormProveedor(prov.id);
+  const delBtn = cont.querySelector('.prov-eliminar');
+  if (delBtn && prov) delBtn.onclick = async () => {
+    if (!confirm(`¿Eliminar el proveedor "${prov.nombre}" y todos sus documentos?`)) return;
+    if (prov.docs) for (const d of prov.docs) { try { await dbDelete(d.id); } catch(e){} }
+    proveedoresLista = proveedoresLista.filter(p => p.id !== prov.id);
+    proveedorActivoId = proveedoresLista.length ? proveedoresLista[0].id : null;
+    await guardarProveedores(); renderProveedores();
+  };
+
+  const cotAdd = cont.querySelector('.prov-cot-add');
+  if (cotAdd && prov) cotAdd.onclick = async () => {
+    const descripcion = prompt('Descripción del ítem cotizado (ej: "Base estabilizada CBR 80"):', '');
+    if (descripcion === null) return;
+    const precioStr = prompt('Precio (solo número, ej: 12500):', '');
+    if (precioStr === null) return;
+    const unidad = prompt('Unidad (ej: m³, ton, gl):', 'm³');
+    if (unidad === null) return;
+    const fecha = prompt('Fecha (AAAA-MM-DD):', new Date().toISOString().slice(0,10));
+    if (fecha === null) return;
+    const precio = precioStr.replace(/[^\d.,]/g,'').replace(/\./g,'').replace(',', '.');
+    prov.cotizaciones = prov.cotizaciones || [];
+    prov.cotizaciones.push({ id: 'cot_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), descripcion: descripcion.trim(), precio: precio === '' ? '' : Number(precio), unidad: unidad.trim(), fecha: fecha.trim() });
+    await guardarProveedores(); renderProveedores();
+  };
+  cont.querySelectorAll('.prov-cot-del').forEach(b => b.onclick = async () => {
+    if (!prov) return;
+    prov.cotizaciones = (prov.cotizaciones || []).filter(c => c.id !== b.dataset.cid);
+    await guardarProveedores(); renderProveedores();
+  });
+
+  const docAdd = cont.querySelector('.prov-doc-add');
+  if (docAdd && prov) docAdd.onclick = () => {
+    const inp = $('consultaUploadInput');
+    inp.value = '';
+    inp.onchange = () => cargarDocsProveedor(prov.id, inp.files);
+    inp.click();
+  };
+  cont.querySelectorAll('.prov-doc-del').forEach(b => b.onclick = async () => {
+    if (!prov) return;
+    const id = b.dataset.did;
+    try { await dbDelete(id); } catch(e){}
+    prov.docs = (prov.docs || []).filter(d => d.id !== id);
+    await guardarProveedores(); renderProveedores();
+  });
+  cont.querySelectorAll('.prov-doc-open').forEach(b => b.onclick = async () => {
+    const id = b.dataset.did;
+    try {
+      const rec = await dbGet(id);
+      if (rec && rec.blob) {
+        const url = URL.createObjectURL(rec.blob);
+        const a = document.createElement('a'); a.href = url; a.download = b.dataset.name || 'documento';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+      } else alert('No se encontró el archivo.');
+    } catch(e) { console.error(e); alert('No se pudo abrir el documento.'); }
+  });
+}
+
+async function cargarDocsProveedor(provId, fileList) {
+  const prov = proveedoresLista.find(p => p.id === provId);
+  if (!prov || !fileList || !fileList.length) return;
+  prov.docs = prov.docs || [];
+  for (const file of fileList) {
+    const id = 'provdoc_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
+    try {
+      await dbPut({ id, blob: file, name: file.name, size: file.size, esProveedorDoc: true });
+      prov.docs.push({ id, name: file.name, size: file.size });
+    } catch(e) { console.error('[proveedores] error guardando doc:', e); alert(`No se pudo guardar ${file.name}.`); }
+  }
+  await guardarProveedores(); renderProveedores();
+}
+
+// Formulario de alta/edición (modal simple sobre la pantalla de consulta)
+function abrirFormProveedor(provId) {
+  const editar = !!provId;
+  const p = editar ? proveedoresLista.find(x => x.id === provId) : { nombre:'', rut:'', rubro:'', contacto:'', telefono:'', email:'', direccion:'', notas:'' };
+  if (editar && !p) return;
+
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(20,30,24,0.45);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;';
+  const campo = (id, label, val, ph, type) => `
+    <div style="margin-bottom:11px;">
+      <label style="display:block;font-size:11.5px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">${label}</label>
+      <input type="${type||'text'}" id="pf_${id}" value="${escapeHtml(val||'')}" placeholder="${escapeHtml(ph||'')}" style="width:100%;padding:8px 10px;border:1px solid var(--border-soft);border-radius:7px;font-size:13px;font-family:inherit;background:var(--surface);color:var(--text);box-sizing:border-box;" />
+    </div>`;
+  ov.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:22px 24px;width:100%;max-width:480px;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-serif);margin-bottom:16px;">${editar ? '✏️ Editar proveedor' : '🏢 Nuevo proveedor'}</div>
+      ${campo('nombre','Nombre / Razón social *', p.nombre, 'Ej: Áridos del Maipo Ltda.')}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div>${campo('rut','RUT', p.rut, '76.123.456-7')}</div>
+        <div>${campo('rubro','Rubro / Especialidad', p.rubro, 'Áridos, asfalto, transporte…')}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div>${campo('contacto','Contacto', p.contacto, 'Nombre de contacto')}</div>
+        <div>${campo('telefono','Teléfono', p.telefono, '+56 9 ...', 'tel')}</div>
+      </div>
+      ${campo('email','Email', p.email, 'ventas@proveedor.cl', 'email')}
+      ${campo('direccion','Dirección', p.direccion, 'Calle, comuna, región')}
+      <div style="margin-bottom:14px;">
+        <label style="display:block;font-size:11.5px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">Notas</label>
+        <textarea id="pf_notas" rows="2" placeholder="Ej: atiende de 8 a 18 hrs, despacho propio…" style="width:100%;padding:8px 10px;border:1px solid var(--border-soft);border-radius:7px;font-size:12.5px;font-family:inherit;background:var(--surface);color:var(--text);resize:vertical;box-sizing:border-box;">${escapeHtml(p.notas||'')}</textarea>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button id="pfCancel" style="font-size:12.5px;border:1px solid var(--border);background:var(--surface);border-radius:7px;padding:8px 16px;cursor:pointer;font-family:inherit;">Cancelar</button>
+        <button id="pfSave" class="btn-primary" style="font-size:12.5px;">${editar ? 'Guardar cambios' : 'Crear proveedor'}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const cerrar = () => ov.remove();
+  ov.addEventListener('click', e => { if (e.target === ov) cerrar(); });
+  ov.querySelector('#pfCancel').onclick = cerrar;
+  ov.querySelector('#pfSave').onclick = async () => {
+    const get = id => (ov.querySelector('#pf_'+id).value || '').trim();
+    const nombre = get('nombre');
+    if (!nombre) { alert('El nombre / razón social es obligatorio.'); return; }
+    const datos = { nombre, rut:get('rut'), rubro:get('rubro'), contacto:get('contacto'), telefono:get('telefono'), email:get('email'), direccion:get('direccion'), notas:get('notas') };
+    if (editar) {
+      Object.assign(p, datos);
+    } else {
+      const nuevo = Object.assign({ id:'prov_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), cotizaciones:[], docs:[] }, datos);
+      proveedoresLista.push(nuevo);
+      proveedorActivoId = nuevo.id;
+    }
+    await guardarProveedores(); cerrar(); renderProveedores();
+  };
+  setTimeout(() => { const f = ov.querySelector('#pf_nombre'); if (f) f.focus(); }, 30);
+}
+
+// Botón del sidebar: alterna entre vista temas y vista proveedores
+const _proveedoresBtn = $('proveedoresBtn');
+if (_proveedoresBtn) _proveedoresBtn.addEventListener('click', () => {
+  if (_vistaProveedoresActiva) cerrarVistaProveedores(); else abrirVistaProveedores();
 });
 
 // --- Respaldo: exportar / importar todo el estado ---
