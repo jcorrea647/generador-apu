@@ -9051,6 +9051,17 @@ function agregarCapasBase(map, opts) {
     attribution: '© Esri, Maxar, Earthstar Geographics',
     maxZoom: maxZoom,
   });
+  // Capa de relieve físico (terreno con sombreado)
+  const capaRelieve = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Physical_Map/MapServer/tile/{z}/{y}/{x}', {
+    attribution: '© Esri, USGS, NOAA',
+    maxZoom: 8,
+  });
+  // Sombreado de relieve (hillshade) para superponer sobre el mapa físico si se desea más detalle
+  const capaTerreno = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenTopoMap (CC-BY-SA)',
+    subdomains: 'abc',
+    maxZoom: 17,
+  });
   // Capa de etiquetas (calles/nombres) que se superpone sobre el satélite
   const capaEtiquetas = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', {
     attribution: '© CARTO',
@@ -9065,6 +9076,8 @@ function agregarCapasBase(map, opts) {
   const baseMaps = {
     '🛰️ Satélite': capaSatelite,
     '🗺️ Mapa': capaNormal,
+    '⛰️ Relieve': capaRelieve,
+    '🏔️ Terreno (topo)': capaTerreno,
   };
   const overlays = {
     'Etiquetas (calles)': capaEtiquetas,
@@ -28770,7 +28783,8 @@ let proyectosSeia = [];
 let _vistaSeiaActiva = false;
 let _seiaMap = null;
 let _seiaMarkersLayer = null;
-let seiaFiltros = { tamano: '', sector: '', estado: '' };
+let seiaFiltros = { tamano: new Set(), sector: new Set(), estado: new Set() };
+let _seiaDropdownAbierto = null; // 'tamano' | 'sector' | 'estado' | null
 
 const SEIA_COMUNAS_CL = {
   'antofagasta':[-23.6509,-70.3975],'calama':[-22.4544,-68.9294],'sierra gorda':[-22.8920,-69.3170],
@@ -28885,9 +28899,9 @@ function _seiaFilasAProyectos(rows) {
 }
 function _seiaFiltrar(lista) {
   return lista.filter(p => {
-    if (seiaFiltros.tamano && _seiaTamano(p.inversion) !== seiaFiltros.tamano) return false;
-    if (seiaFiltros.sector && _seiaNorm(p.sector) !== _seiaNorm(seiaFiltros.sector)) return false;
-    if (seiaFiltros.estado && _seiaNorm(p.estado) !== _seiaNorm(seiaFiltros.estado)) return false;
+    if (seiaFiltros.tamano.size && !seiaFiltros.tamano.has(_seiaTamano(p.inversion))) return false;
+    if (seiaFiltros.sector.size && !seiaFiltros.sector.has(_seiaNorm(p.sector))) return false;
+    if (seiaFiltros.estado.size && !seiaFiltros.estado.has(_seiaNorm(p.estado))) return false;
     return true;
   });
 }
@@ -28926,6 +28940,54 @@ function cerrarVistaSeia() {
   renderConsultaTemaContenido();
 }
 
+// Devuelve [{valor, label, count}] para un campo, sobre la lista total.
+function _seiaOpcionesCount(campo) {
+  const m = new Map();
+  proyectosSeia.forEach(p => {
+    let val, label;
+    if (campo === 'tamano') { val = _seiaTamano(p.inversion); label = val; }
+    else { const raw = (p[campo]||'').trim(); if (!raw) return; val = _seiaNorm(raw); label = raw; }
+    if (!m.has(val)) m.set(val, { valor: val, label, count: 0 });
+    m.get(val).count++;
+  });
+  return Array.from(m.values()).sort((a,b)=>a.label.localeCompare(b.label,'es'));
+}
+
+const SEIA_TAMANO_ORDEN = ['Pequeño','Mediano','Grande','Megaproyecto','Sin dato'];
+
+function _seiaDropdown(campo, titulo) {
+  const set = seiaFiltros[campo];
+  let opciones = _seiaOpcionesCount(campo);
+  if (campo === 'tamano') opciones.sort((a,b)=>SEIA_TAMANO_ORDEN.indexOf(a.label)-SEIA_TAMANO_ORDEN.indexOf(b.label));
+  const n = set.size;
+  const btnLabel = n === 0 ? 'Todos' : (n === 1
+    ? (opciones.find(o=>set.has(o.valor))||{label:'1'}).label
+    : `${n} seleccionados`);
+  const abierto = _seiaDropdownAbierto === campo;
+  const cbStyle = 'width:15px;height:15px;cursor:pointer;accent-color:#10B981;flex-shrink:0;';
+  const rowStyle = 'display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:6px;cursor:pointer;font-size:12.5px;color:var(--text);';
+  const items = opciones.map(o => {
+    const chk = set.has(o.valor) ? 'checked' : '';
+    return `<label style="${rowStyle}" onmouseover="this.style.background='var(--surface-warm)'" onmouseout="this.style.background='transparent'">
+      <input type="checkbox" class="seia-cb" data-campo="${campo}" data-val="${escapeHtml(o.valor)}" ${chk} style="${cbStyle}">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(o.label)}</span>
+      <span style="color:var(--text-soft);font-size:11px;">${o.count}</span>
+    </label>`;
+  }).join('') || '<div style="padding:10px;color:var(--text-mute);font-size:12px;text-align:center;">Sin valores</div>';
+  return `
+    <div style="flex:1;min-width:160px;position:relative;">
+      <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">${titulo}</label>
+      <button class="seia-filtro-btn" data-campo="${campo}" style="width:100%;text-align:left;padding:7px 9px;border:1px solid ${n?'var(--accent)':'var(--border)'};border-radius:7px;font-family:inherit;font-size:12.5px;background:${n?'var(--accent-lightest)':'var(--surface)'};color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:6px;">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(btnLabel)}</span>
+        <span style="opacity:0.6;">${abierto?'▲':'▼'}</span>
+      </button>
+      <div class="seia-filtro-panel" data-campo="${campo}" style="display:${abierto?'block':'none'};position:absolute;top:100%;left:0;right:0;margin-top:4px;background:var(--surface);border:1px solid var(--border);border-radius:9px;box-shadow:0 12px 36px rgba(0,0,0,0.18);z-index:1200;max-height:280px;overflow-y:auto;padding:6px;">
+        <div class="seia-filtro-todos" data-campo="${campo}" style="${rowStyle}font-weight:600;border-bottom:1px solid var(--border-soft);border-radius:0;margin-bottom:4px;">↺ Ver todos</div>
+        ${items}
+      </div>
+    </div>`;
+}
+
 function renderSeia() {
   const cont = $('consultaTemaContenido');
   if (!cont) return;
@@ -28934,13 +28996,7 @@ function renderSeia() {
   const filtrados = _seiaFiltrar(proyectosSeia);
   const conGeo = filtrados.filter(p => p.lat != null && p.lon != null).length;
   const sinGeo = filtrados.length - conGeo;
-
-  const opSector = _seiaOpciones(proyectosSeia, 'sector');
-  const opEstado = _seiaOpciones(proyectosSeia, 'estado');
-  const tamanos = ['Pequeño','Mediano','Grande','Megaproyecto','Sin dato'];
-
-  const selOpts = (arr, sel) => ['<option value="">Todos</option>'].concat(
-    arr.map(o => `<option value="${escapeHtml(o)}" ${o===sel?'selected':''}>${escapeHtml(o)}</option>`)).join('');
+  const hayFiltro = seiaFiltros.tamano.size || seiaFiltros.sector.size || seiaFiltros.estado.size;
 
   cont.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
@@ -28952,20 +29008,12 @@ function renderSeia() {
       ${proyectosSeia.length ? '<button class="seia-limpiar" style="font-size:12px;border:1px solid var(--border);background:var(--surface);border-radius:7px;padding:7px 12px;cursor:pointer;font-family:inherit;color:#DC2626;">🗑 Vaciar</button>' : ''}
     </div>
 
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
-      <div style="flex:1;min-width:150px;">
-        <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">Tamaño (por inversión)</label>
-        <select id="seiaFTamano" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-family:inherit;font-size:12.5px;background:var(--surface);color:var(--text);">${selOpts(tamanos, seiaFiltros.tamano)}</select>
-      </div>
-      <div style="flex:1;min-width:150px;">
-        <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">Sector productivo</label>
-        <select id="seiaFSector" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-family:inherit;font-size:12.5px;background:var(--surface);color:var(--text);">${selOpts(opSector, seiaFiltros.sector)}</select>
-      </div>
-      <div style="flex:1;min-width:150px;">
-        <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">Estado del proyecto</label>
-        <select id="seiaFEstado" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-family:inherit;font-size:12.5px;background:var(--surface);color:var(--text);">${selOpts(opEstado, seiaFiltros.estado)}</select>
-      </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:flex-start;">
+      ${_seiaDropdown('tamano','Tamaño (por inversión)')}
+      ${_seiaDropdown('sector','Sector productivo')}
+      ${_seiaDropdown('estado','Estado del proyecto')}
     </div>
+    ${hayFiltro ? `<div style="margin-bottom:10px;"><a href="#" class="seia-limpiar-filtros" style="font-size:11.5px;color:var(--accent-dark);text-decoration:underline;">Limpiar filtros</a></div>` : '<div style="margin-bottom:10px;"></div>'}
 
     ${proyectosSeia.length ? `
       <div id="seiaMap" style="width:100%;height:440px;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:8px;"></div>
@@ -28981,7 +29029,9 @@ function renderSeia() {
       </div>`}
   `;
 
-  // Wiring
+  _seiaWireFiltros();
+
+  // Wiring acciones
   const cargarBtn = cont.querySelector('.seia-cargar');
   if (cargarBtn) cargarBtn.onclick = () => {
     const inp = $('seiaUploadInput'); inp.value = '';
@@ -28991,14 +29041,99 @@ function renderSeia() {
   const limpiarBtn = cont.querySelector('.seia-limpiar');
   if (limpiarBtn) limpiarBtn.onclick = async () => {
     if (!confirm('¿Vaciar todos los proyectos SEIA cargados? Esta acción afecta al equipo.')) return;
-    proyectosSeia = []; await guardarProyectosSeia(); renderSeia();
+    proyectosSeia = []; seiaFiltros = { tamano:new Set(), sector:new Set(), estado:new Set() }; _seiaDropdownAbierto = null;
+    await guardarProyectosSeia(); renderSeia();
   };
-  const fT = $('seiaFTamano'), fS = $('seiaFSector'), fE = $('seiaFEstado');
-  if (fT) fT.onchange = () => { seiaFiltros.tamano = fT.value; renderSeia(); };
-  if (fS) fS.onchange = () => { seiaFiltros.sector = fS.value; renderSeia(); };
-  if (fE) fE.onchange = () => { seiaFiltros.estado = fE.value; renderSeia(); };
+  const limpiarFiltros = cont.querySelector('.seia-limpiar-filtros');
+  if (limpiarFiltros) limpiarFiltros.onclick = (e) => {
+    e.preventDefault();
+    seiaFiltros = { tamano:new Set(), sector:new Set(), estado:new Set() }; _seiaDropdownAbierto = null;
+    renderSeia();
+  };
 
   if (proyectosSeia.length) setTimeout(() => _seiaPintarMapa(filtrados), 30);
+}
+
+// Cablea botones y checkboxes de los dropdowns SIN re-render completo al togglear,
+// para que el panel no se cierre al marcar varias opciones seguidas.
+function _seiaWireFiltros() {
+  const cont = $('consultaTemaContenido');
+  if (!cont) return;
+
+  cont.querySelectorAll('.seia-filtro-btn').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const campo = btn.dataset.campo;
+      _seiaDropdownAbierto = (_seiaDropdownAbierto === campo) ? null : campo;
+      // Solo alternar visibilidad de paneles, sin re-render del mapa
+      cont.querySelectorAll('.seia-filtro-panel').forEach(p => {
+        const ab = p.dataset.campo === _seiaDropdownAbierto;
+        p.style.display = ab ? 'block' : 'none';
+      });
+      cont.querySelectorAll('.seia-filtro-btn').forEach(b => {
+        const ab = b.dataset.campo === _seiaDropdownAbierto;
+        const flecha = b.querySelector('span:last-child');
+        if (flecha) flecha.textContent = ab ? '▲' : '▼';
+      });
+    };
+  });
+
+  cont.querySelectorAll('.seia-cb').forEach(cb => {
+    cb.onclick = (e) => e.stopPropagation();
+    cb.onchange = () => {
+      const campo = cb.dataset.campo, val = cb.dataset.val;
+      if (cb.checked) seiaFiltros[campo].add(val); else seiaFiltros[campo].delete(val);
+      _seiaActualizarTrasFiltro();
+    };
+  });
+
+  cont.querySelectorAll('.seia-filtro-todos').forEach(el => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const campo = el.dataset.campo;
+      seiaFiltros[campo].clear();
+      // desmarcar checkboxes visibles de ese campo
+      cont.querySelectorAll(`.seia-cb[data-campo="${campo}"]`).forEach(c => c.checked = false);
+      _seiaActualizarTrasFiltro();
+    };
+  });
+}
+
+// Tras togglear un checkbox: re-pinta mapa, contador y etiqueta del botón,
+// pero mantiene el dropdown abierto (no recrea el panel).
+function _seiaActualizarTrasFiltro() {
+  const cont = $('consultaTemaContenido');
+  if (!cont) return;
+  const filtrados = _seiaFiltrar(proyectosSeia);
+
+  // Etiqueta de cada botón
+  ['tamano','sector','estado'].forEach(campo => {
+    const btn = cont.querySelector(`.seia-filtro-btn[data-campo="${campo}"]`);
+    if (!btn) return;
+    const set = seiaFiltros[campo];
+    const n = set.size;
+    let label = 'Todos';
+    if (n === 1) {
+      const opciones = _seiaOpcionesCount(campo);
+      const o = opciones.find(o => set.has(o.valor));
+      label = o ? o.label : '1';
+    } else if (n > 1) label = `${n} seleccionados`;
+    const span = btn.querySelector('span:first-child');
+    if (span) span.textContent = label;
+    btn.style.borderColor = n ? 'var(--accent)' : 'var(--border)';
+    btn.style.background = n ? 'var(--accent-lightest)' : 'var(--surface)';
+  });
+
+  // Re-pintar solo los marcadores (mantiene capa elegida y posición)
+  _seiaPintarMarcadores(filtrados, false);
+
+  // Repintar barra inferior de conteo si existe (buscar el <b> de "Mostrando")
+  const conGeo = filtrados.filter(p => p.lat != null && p.lon != null).length;
+  const leyenda = cont.querySelector('#seiaMap') ? cont.querySelector('#seiaMap').nextElementSibling : null;
+  if (leyenda) {
+    const b = leyenda.querySelector('b');
+    if (b) b.textContent = filtrados.length;
+  }
 }
 
 function _seiaPintarMapa(filtrados) {
@@ -29006,11 +29141,22 @@ function _seiaPintarMapa(filtrados) {
   if (!el || typeof L === 'undefined') return;
   if (_seiaMap) { try { _seiaMap.remove(); } catch(e){} }
   _seiaMap = L.map(el, { scrollWheelZoom: true }).setView([-31.5, -70.8], 4);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-    attribution: '© OpenStreetMap, © CARTO', subdomains: 'abcd', maxZoom: 19,
-  }).addTo(_seiaMap);
+  if (typeof agregarCapasBase === 'function') {
+    agregarCapasBase(_seiaMap, { maxZoom: 19 }).addTo(_seiaMap);
+  } else {
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap, © CARTO', subdomains: 'abcd', maxZoom: 19,
+    }).addTo(_seiaMap);
+  }
   _seiaMarkersLayer = L.layerGroup().addTo(_seiaMap);
+  _seiaPintarMarcadores(filtrados, true);
+  setTimeout(() => { if (_seiaMap) _seiaMap.invalidateSize(); }, 100);
+}
 
+// Limpia y repinta solo los marcadores sobre el mapa ya creado (no recrea capas).
+function _seiaPintarMarcadores(filtrados, ajustarVista) {
+  if (!_seiaMap || !_seiaMarkersLayer) return;
+  _seiaMarkersLayer.clearLayers();
   const conGeo = filtrados.filter(p => p.lat != null && p.lon != null);
   const bounds = [];
   conGeo.forEach(p => {
@@ -29037,8 +29183,7 @@ function _seiaPintarMapa(filtrados) {
     marker.addTo(_seiaMarkersLayer);
     bounds.push([p.lat, p.lon]);
   });
-  if (bounds.length) { try { _seiaMap.fitBounds(bounds, { padding: [30,30], maxZoom: 9 }); } catch(e){} }
-  setTimeout(() => { if (_seiaMap) _seiaMap.invalidateSize(); }, 100);
+  if (ajustarVista && bounds.length) { try { _seiaMap.fitBounds(bounds, { padding: [30,30], maxZoom: 9 }); } catch(e){} }
 }
 
 async function importarExcelSeia(fileList) {
@@ -29058,7 +29203,7 @@ async function importarExcelSeia(fileList) {
       : true;
     proyectosSeia = reemplazar ? nuevos : proyectosSeia.concat(nuevos);
     await guardarProyectosSeia();
-    seiaFiltros = { tamano:'', sector:'', estado:'' };
+    seiaFiltros = { tamano:new Set(), sector:new Set(), estado:new Set() }; _seiaDropdownAbierto = null;
     renderSeia();
     if (sinGeo) setTimeout(() => alert(`${nuevos.length - sinGeo} proyecto(s) ubicados en el mapa. ${sinGeo} sin ubicación reconocida (comuna/región no encontrada) — igualmente quedan guardados.`), 200);
   } catch(e) {
