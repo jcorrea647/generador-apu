@@ -6249,6 +6249,7 @@
         <button class="btn-secondary" id="consultaNuevoTemaBtn" style="margin-top:10px;width:100%;font-size:12px;">+ Nuevo tema</button>
         <div style="border-top:1px dashed var(--border-soft);margin:10px 0;"></div>
         <button id="proveedoresBtn" style="width:100%;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🏢 Proveedores</button>
+        <button id="seiaBtn" style="width:100%;margin-top:6px;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🌎 Proyectos SEIA</button>
       </div>
 
       <!-- Contenido del tema activo -->
@@ -6258,6 +6259,7 @@
     </div>
   </div>
   <input type="file" id="consultaUploadInput" accept=".pdf,.md,.txt,.docx" multiple style="display:none;" />
+  <input type="file" id="seiaUploadInput" accept=".xlsx,.xlsm,.xls,.csv" style="display:none;" />
 </div>
 
 <!-- ============ APP: VISTA DENTRO DE LICITACIÓN ============ -->
@@ -28046,7 +28048,7 @@ function renderConsultaTemas() {
     </button>`;
   }).join('');
   cont.querySelectorAll('.consulta-tema-btn').forEach(btn => {
-    btn.onclick = () => { _vistaProveedoresActiva = false; consultaTemaActivoId = btn.dataset.id; renderConsultaTemas(); renderConsultaTemaContenido(); };
+    btn.onclick = () => { _vistaProveedoresActiva = false; _vistaSeiaActiva = false; consultaTemaActivoId = btn.dataset.id; renderConsultaTemas(); renderConsultaTemaContenido(); };
   });
   // Reflejar estado del botón Proveedores
   const pbtn = $('proveedoresBtn');
@@ -28055,6 +28057,15 @@ function renderConsultaTemas() {
       pbtn.style.background = 'var(--accent)'; pbtn.style.color = '#FFFFFF'; pbtn.style.borderColor = 'var(--accent)';
     } else {
       pbtn.style.background = '#EAF3EC'; pbtn.style.color = 'var(--accent)'; pbtn.style.borderColor = '#C7D9C9';
+    }
+  }
+  // Reflejar estado del botón Proyectos SEIA
+  const sbtn = $('seiaBtn');
+  if (sbtn) {
+    if (_vistaSeiaActiva) {
+      sbtn.style.background = 'var(--accent)'; sbtn.style.color = '#FFFFFF'; sbtn.style.borderColor = 'var(--accent)';
+    } else {
+      sbtn.style.background = '#EAF3EC'; sbtn.style.color = 'var(--accent)'; sbtn.style.borderColor = '#C7D9C9';
     }
   }
 }
@@ -28490,6 +28501,7 @@ function _provIniciales(nombre) {
 
 function abrirVistaProveedores() {
   _vistaProveedoresActiva = true;
+  _vistaSeiaActiva = false;
   if (!proveedorActivoId && proveedoresLista.length) proveedorActivoId = proveedoresLista[0].id;
   renderConsultaTemas();
   (async () => { await cargarProveedores(); if (!proveedorActivoId && proveedoresLista.length) proveedorActivoId = proveedoresLista[0].id; renderProveedores(); })();
@@ -28748,6 +28760,317 @@ function abrirFormProveedor(provId) {
 const _proveedoresBtn = $('proveedoresBtn');
 if (_proveedoresBtn) _proveedoresBtn.addEventListener('click', () => {
   if (_vistaProveedoresActiva) cerrarVistaProveedores(); else abrirVistaProveedores();
+});
+
+// ======================================================================
+// MÓDULO PROYECTOS SEIA — mapa Leaflet + filtros (tamaño / sector / estado)
+// Carga por Excel/CSV (tus columnas SEIA). Persistencia team-scoped: 'proyectos_seia'.
+// ======================================================================
+let proyectosSeia = [];
+let _vistaSeiaActiva = false;
+let _seiaMap = null;
+let _seiaMarkersLayer = null;
+let seiaFiltros = { tamano: '', sector: '', estado: '' };
+
+const SEIA_COMUNAS_CL = {
+  'antofagasta':[-23.6509,-70.3975],'calama':[-22.4544,-68.9294],'sierra gorda':[-22.8920,-69.3170],
+  'maria elena':[-22.3500,-69.6667],'mejillones':[-23.0990,-70.4500],'taltal':[-25.4070,-70.4840],
+  'tocopilla':[-22.0920,-70.1980],'san pedro de atacama':[-22.9110,-68.2000],'ollague':[-21.2230,-68.2580],
+  'copiapo':[-27.3668,-70.3322],'tierra amarilla':[-27.4860,-70.2620],'diego de almagro':[-26.3870,-70.0500],
+  'chanaral':[-26.3470,-70.6230],'vallenar':[-28.5760,-70.7590],'caldera':[-27.0670,-70.8240],
+  'freirina':[-28.5010,-71.0700],'huasco':[-28.4670,-71.2160],'alto del carmen':[-28.7530,-70.4760],
+  'la serena':[-29.9027,-71.2519],'coquimbo':[-29.9533,-71.3436],'ovalle':[-30.5980,-71.2000],
+  'illapel':[-31.6330,-71.1660],'andacollo':[-30.2330,-71.0830],'vicuna':[-30.0320,-70.7090],
+  'salamanca':[-31.7780,-70.9640],'combarbala':[-31.1790,-71.0050],'monte patria':[-30.6940,-70.9580],
+  'valparaiso':[-33.0472,-71.6127],'vina del mar':[-33.0246,-71.5518],'los andes':[-32.8340,-70.5980],
+  'san felipe':[-32.7500,-70.7250],'putaendo':[-32.6280,-70.7220],'catemu':[-32.7790,-70.9540],
+  'nogales':[-32.7270,-71.2080],'quillota':[-32.8800,-71.2480],'cabildo':[-32.4250,-71.0680],
+  'petorca':[-32.2480,-70.9300],'santiago':[-33.4489,-70.6693],'puente alto':[-33.6110,-70.5760],
+  'colina':[-33.2020,-70.6760],'til til':[-33.0850,-70.9300],'lampa':[-33.2860,-70.8780],
+  'san jose de maipo':[-33.6420,-70.3530],'maipu':[-33.5110,-70.7580],'melipilla':[-33.6880,-71.2150],
+  'rancagua':[-34.1701,-70.7406],'machali':[-34.1810,-70.6500],'requinoa':[-34.2860,-70.8120],
+  'rengo':[-34.4060,-70.8590],'san fernando':[-34.5860,-70.9890],'mostazal':[-33.9810,-70.7050],
+  'talca':[-35.4264,-71.6554],'curico':[-34.9830,-71.2390],'linares':[-35.8460,-71.5930],
+  'cauquenes':[-35.9670,-72.3160],'concepcion':[-36.8201,-73.0444],'los angeles':[-37.4690,-72.3530],
+  'lota':[-37.0890,-73.1570],'coronel':[-37.0280,-73.1390],'mulchen':[-37.7180,-72.2400],
+  'temuco':[-38.7359,-72.5904],'angol':[-37.7950,-72.7140],'puerto montt':[-41.4717,-72.9369],
+  'osorno':[-40.5740,-73.1330],'castro':[-42.4820,-73.7650],'iquique':[-20.2208,-70.1431],
+  'pozo almonte':[-20.2580,-69.7860],'huara':[-19.9970,-69.7700],'pica':[-20.4910,-69.3300],
+  'alto hospicio':[-20.2700,-70.1010],'arica':[-18.4783,-70.3126],'putre':[-18.1960,-69.5600],
+  'punta arenas':[-53.1638,-70.9171],'coyhaique':[-45.5712,-72.0685],'chillan':[-36.6066,-72.1034],
+  'valdivia':[-39.8142,-73.2459],
+};
+const SEIA_REGIONES_CL = {
+  'arica y parinacota':[-18.4783,-70.3126],'tarapaca':[-20.2208,-70.1431],'antofagasta':[-23.6509,-70.3975],
+  'atacama':[-27.3668,-70.3322],'coquimbo':[-29.9533,-71.3436],'valparaiso':[-33.0472,-71.6127],
+  'metropolitana':[-33.4489,-70.6693],'metropolitana de santiago':[-33.4489,-70.6693],
+  "o'higgins":[-34.1701,-70.7406],"del libertador general bernardo o'higgins":[-34.1701,-70.7406],
+  'maule':[-35.4264,-71.6554],'nuble':[-36.6066,-72.1034],'biobio':[-36.8201,-73.0444],'del biobio':[-36.8201,-73.0444],
+  'araucania':[-38.7359,-72.5904],'la araucania':[-38.7359,-72.5904],'los rios':[-39.8142,-73.2459],
+  'los lagos':[-41.4717,-72.9369],'aysen':[-45.5712,-72.0685],'magallanes':[-53.1638,-70.9171],
+};
+
+function _seiaNorm(s) {
+  return (s||'').toString().toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/^region\s+(de\s+|del\s+|de\s+la\s+)?/,'').replace(/\s+/g,' ');
+}
+function _seiaGeo(comuna, region) {
+  const c = _seiaNorm(comuna);
+  if (c && SEIA_COMUNAS_CL[c]) return SEIA_COMUNAS_CL[c];
+  const r = _seiaNorm(region);
+  if (r && SEIA_REGIONES_CL[r]) return SEIA_REGIONES_CL[r];
+  for (const k in SEIA_COMUNAS_CL) { if (c && (c.includes(k)||k.includes(c))) return SEIA_COMUNAS_CL[k]; }
+  for (const k in SEIA_REGIONES_CL) { if (r && (r.includes(k)||k.includes(r))) return SEIA_REGIONES_CL[k]; }
+  return null;
+}
+function _seiaJitter(coord, seed) {
+  if (!coord) return null;
+  let h = 0; for (let i=0;i<seed.length;i++){ h = (h*31 + seed.charCodeAt(i)) & 0xffff; }
+  return [coord[0] + (((h>>4)%100)/100-0.5)*0.08, coord[1] + ((h%100)/100-0.5)*0.08];
+}
+function _seiaParseInversion(v) {
+  if (v==null||v==='') return null;
+  if (typeof v==='number') return v;
+  let s = v.toString().replace(/[^\d.,]/g,'');
+  if (!s) return null;
+  if (s.includes(',')&&s.includes('.')) s = s.replace(/\./g,'').replace(',','.');
+  else if (s.includes(',')) s = s.replace(',','.');
+  const n = parseFloat(s); return isNaN(n)?null:n;
+}
+function _seiaTamano(mmusd) {
+  if (mmusd==null) return 'Sin dato';
+  if (mmusd<5) return 'Pequeño';
+  if (mmusd<50) return 'Mediano';
+  if (mmusd<500) return 'Grande';
+  return 'Megaproyecto';
+}
+const SEIA_COL_ALIASES = {
+  nombre:['nombre del proyecto','nombre proyecto','nombre'],
+  web:['web (con el link)','web','link','url','enlace'],
+  tipo:['tipo de presentacion','tipo presentacion','tipo'],
+  region:['region'], comuna:['comuna'], titular:['titular','proponente'],
+  inversion:['inversion (mmu$)','inversion mmu$','inversion','monto inversion'],
+  fechaPres:['fecha presentacion','fecha de presentacion'],
+  estado:['estado del proyecto','estado'],
+  fechaCalif:['fecha calificacion','fecha de calificacion'],
+  sector:['sector productivo','sector','tipologia'],
+};
+function _seiaMatchCol(header) {
+  const h = _seiaNorm(header);
+  for (const campo in SEIA_COL_ALIASES) if (SEIA_COL_ALIASES[campo].some(a => h === _seiaNorm(a))) return campo;
+  for (const campo in SEIA_COL_ALIASES) if (SEIA_COL_ALIASES[campo].some(a => h.startsWith(_seiaNorm(a)))) return campo;
+  for (const campo in SEIA_COL_ALIASES) if (SEIA_COL_ALIASES[campo].some(a => { const na=_seiaNorm(a); return na.length>=4 && h.includes(na); })) return campo;
+  return null;
+}
+function _seiaFilasAProyectos(rows) {
+  if (!rows.length) return [];
+  const map = {};
+  Object.keys(rows[0]).forEach(h => { const c = _seiaMatchCol(h); if (c && !map[c]) map[c] = h; });
+  const out = [];
+  rows.forEach((r,i) => {
+    const g = campo => (map[campo] ? (r[map[campo]] ?? '') : '').toString().trim();
+    const nombre = g('nombre'); if (!nombre) return;
+    const comuna = g('comuna'), region = g('region');
+    const coord = _seiaGeo(comuna, region);
+    const jit = coord ? _seiaJitter(coord, nombre+comuna) : null;
+    out.push({
+      id:'seia_'+Date.now().toString(36)+'_'+i+'_'+Math.random().toString(36).slice(2,5),
+      nombre, web:g('web'), tipo:g('tipo'), region, comuna, titular:g('titular'),
+      inversion:_seiaParseInversion(g('inversion')), fechaPres:g('fechaPres'),
+      estado:g('estado'), fechaCalif:g('fechaCalif'), sector:g('sector'),
+      lat: jit?jit[0]:null, lon: jit?jit[1]:null,
+    });
+  });
+  return out;
+}
+function _seiaFiltrar(lista) {
+  return lista.filter(p => {
+    if (seiaFiltros.tamano && _seiaTamano(p.inversion) !== seiaFiltros.tamano) return false;
+    if (seiaFiltros.sector && _seiaNorm(p.sector) !== _seiaNorm(seiaFiltros.sector)) return false;
+    if (seiaFiltros.estado && _seiaNorm(p.estado) !== _seiaNorm(seiaFiltros.estado)) return false;
+    return true;
+  });
+}
+function _seiaOpciones(lista, campo) {
+  const set = new Set();
+  lista.forEach(p => { const v=(p[campo]||'').trim(); if (v) set.add(v); });
+  return Array.from(set).sort((a,b)=>a.localeCompare(b,'es'));
+}
+function _seiaColorEstado(estado) {
+  const e = _seiaNorm(estado);
+  if (e.includes('aprobad')||e.includes('favorable')) return '#059669';
+  if (e.includes('calific')||e.includes('admisi')||e.includes('evaluac')) return '#D97706';
+  if (e.includes('rechaz')||e.includes('desist')||e.includes('no admit')) return '#DC2626';
+  return '#6B7280';
+}
+
+async function cargarProyectosSeia() {
+  try { const rec = await dbGet('proyectos_seia'); if (rec && Array.isArray(rec.proyectos)) proyectosSeia = rec.proyectos; }
+  catch(e) { console.warn('[seia] error cargando:', e); }
+}
+async function guardarProyectosSeia() {
+  try { await dbPut({ id:'proyectos_seia', proyectos: proyectosSeia }); }
+  catch(e) { console.error('[seia] error guardando:', e); }
+}
+
+function abrirVistaSeia() {
+  _vistaSeiaActiva = true;
+  _vistaProveedoresActiva = false;
+  renderConsultaTemas();
+  (async () => { await cargarProyectosSeia(); renderSeia(); })();
+}
+function cerrarVistaSeia() {
+  _vistaSeiaActiva = false;
+  if (_seiaMap) { try { _seiaMap.remove(); } catch(e){} _seiaMap = null; _seiaMarkersLayer = null; }
+  renderConsultaTemas();
+  renderConsultaTemaContenido();
+}
+
+function renderSeia() {
+  const cont = $('consultaTemaContenido');
+  if (!cont) return;
+  if (_seiaMap) { try { _seiaMap.remove(); } catch(e){} _seiaMap = null; _seiaMarkersLayer = null; }
+
+  const filtrados = _seiaFiltrar(proyectosSeia);
+  const conGeo = filtrados.filter(p => p.lat != null && p.lon != null).length;
+  const sinGeo = filtrados.length - conGeo;
+
+  const opSector = _seiaOpciones(proyectosSeia, 'sector');
+  const opEstado = _seiaOpciones(proyectosSeia, 'estado');
+  const tamanos = ['Pequeño','Mediano','Grande','Megaproyecto','Sin dato'];
+
+  const selOpts = (arr, sel) => ['<option value="">Todos</option>'].concat(
+    arr.map(o => `<option value="${escapeHtml(o)}" ${o===sel?'selected':''}>${escapeHtml(o)}</option>`)).join('');
+
+  cont.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:200px;">
+        <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-serif);">🌎 Proyectos SEIA</div>
+        <div style="font-size:12px;color:var(--text-soft);">${proyectosSeia.length} proyecto(s) · ${conGeo} en mapa${sinGeo?` · ${sinGeo} sin ubicación`:''} · compartido con el equipo</div>
+      </div>
+      <button class="btn-secondary seia-cargar" style="font-size:12px;">⬆ Cargar Excel/CSV</button>
+      ${proyectosSeia.length ? '<button class="seia-limpiar" style="font-size:12px;border:1px solid var(--border);background:var(--surface);border-radius:7px;padding:7px 12px;cursor:pointer;font-family:inherit;color:#DC2626;">🗑 Vaciar</button>' : ''}
+    </div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+      <div style="flex:1;min-width:150px;">
+        <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">Tamaño (por inversión)</label>
+        <select id="seiaFTamano" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-family:inherit;font-size:12.5px;background:var(--surface);color:var(--text);">${selOpts(tamanos, seiaFiltros.tamano)}</select>
+      </div>
+      <div style="flex:1;min-width:150px;">
+        <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">Sector productivo</label>
+        <select id="seiaFSector" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-family:inherit;font-size:12.5px;background:var(--surface);color:var(--text);">${selOpts(opSector, seiaFiltros.sector)}</select>
+      </div>
+      <div style="flex:1;min-width:150px;">
+        <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">Estado del proyecto</label>
+        <select id="seiaFEstado" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:7px;font-family:inherit;font-size:12.5px;background:var(--surface);color:var(--text);">${selOpts(opEstado, seiaFiltros.estado)}</select>
+      </div>
+    </div>
+
+    ${proyectosSeia.length ? `
+      <div id="seiaMap" style="width:100%;height:440px;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:8px;"></div>
+      <div style="font-size:11px;color:var(--text-mute);display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
+        <span>Mostrando <b>${filtrados.length}</b> de ${proyectosSeia.length}</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:50%;background:#059669;display:inline-block;"></span>Aprobado</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:50%;background:#D97706;display:inline-block;"></span>En calificación</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:50%;background:#DC2626;display:inline-block;"></span>Rechazado/desistido</span>
+      </div>`
+    : `<div style="padding:40px 20px;text-align:center;color:var(--text-mute);font-size:13px;border:1px dashed var(--border);border-radius:12px;">
+        Sin proyectos cargados. Usa <b>Cargar Excel/CSV</b> con las columnas:<br>
+        <span style="font-size:11.5px;">Nombre del Proyecto · WEB · Tipo de Presentación · Región · Comuna · Titular · Inversión (MMU$) · Fecha Presentación · Estado del Proyecto · Fecha Calificación · Sector Productivo</span>
+      </div>`}
+  `;
+
+  // Wiring
+  const cargarBtn = cont.querySelector('.seia-cargar');
+  if (cargarBtn) cargarBtn.onclick = () => {
+    const inp = $('seiaUploadInput'); inp.value = '';
+    inp.onchange = () => importarExcelSeia(inp.files);
+    inp.click();
+  };
+  const limpiarBtn = cont.querySelector('.seia-limpiar');
+  if (limpiarBtn) limpiarBtn.onclick = async () => {
+    if (!confirm('¿Vaciar todos los proyectos SEIA cargados? Esta acción afecta al equipo.')) return;
+    proyectosSeia = []; await guardarProyectosSeia(); renderSeia();
+  };
+  const fT = $('seiaFTamano'), fS = $('seiaFSector'), fE = $('seiaFEstado');
+  if (fT) fT.onchange = () => { seiaFiltros.tamano = fT.value; renderSeia(); };
+  if (fS) fS.onchange = () => { seiaFiltros.sector = fS.value; renderSeia(); };
+  if (fE) fE.onchange = () => { seiaFiltros.estado = fE.value; renderSeia(); };
+
+  if (proyectosSeia.length) setTimeout(() => _seiaPintarMapa(filtrados), 30);
+}
+
+function _seiaPintarMapa(filtrados) {
+  const el = $('seiaMap');
+  if (!el || typeof L === 'undefined') return;
+  if (_seiaMap) { try { _seiaMap.remove(); } catch(e){} }
+  _seiaMap = L.map(el, { scrollWheelZoom: true }).setView([-31.5, -70.8], 4);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap, © CARTO', subdomains: 'abcd', maxZoom: 19,
+  }).addTo(_seiaMap);
+  _seiaMarkersLayer = L.layerGroup().addTo(_seiaMap);
+
+  const conGeo = filtrados.filter(p => p.lat != null && p.lon != null);
+  const bounds = [];
+  conGeo.forEach(p => {
+    const color = _seiaColorEstado(p.estado);
+    const marker = L.circleMarker([p.lat, p.lon], {
+      radius: 7, color: '#fff', weight: 1.5, fillColor: color, fillOpacity: 0.9,
+    });
+    const inv = p.inversion != null ? `US$ ${p.inversion.toLocaleString('es-CL')} MM (${_seiaTamano(p.inversion)})` : 'Sin dato';
+    const webLink = p.web ? `<a href="${escapeHtml(p.web)}" target="_blank" rel="noopener" style="color:var(--accent);">Ver ficha SEIA ↗</a>` : '';
+    marker.bindPopup(`
+      <div class="lic-map-popup-title" style="font-weight:700;font-size:13px;margin-bottom:5px;">${escapeHtml(p.nombre)}</div>
+      <table style="font-size:11.5px;line-height:1.5;">
+        ${p.titular?`<tr><td style="color:#666;padding-right:8px;">Titular</td><td>${escapeHtml(p.titular)}</td></tr>`:''}
+        ${p.comuna||p.region?`<tr><td style="color:#666;padding-right:8px;">Ubicación</td><td>${escapeHtml([p.comuna,p.region].filter(Boolean).join(', '))}</td></tr>`:''}
+        <tr><td style="color:#666;padding-right:8px;">Inversión</td><td>${inv}</td></tr>
+        ${p.sector?`<tr><td style="color:#666;padding-right:8px;">Sector</td><td>${escapeHtml(p.sector)}</td></tr>`:''}
+        ${p.tipo?`<tr><td style="color:#666;padding-right:8px;">Tipo</td><td>${escapeHtml(p.tipo)}</td></tr>`:''}
+        ${p.estado?`<tr><td style="color:#666;padding-right:8px;">Estado</td><td><b style="color:${color};">${escapeHtml(p.estado)}</b></td></tr>`:''}
+        ${p.fechaPres?`<tr><td style="color:#666;padding-right:8px;">Presentación</td><td>${escapeHtml(p.fechaPres)}</td></tr>`:''}
+        ${p.fechaCalif?`<tr><td style="color:#666;padding-right:8px;">Calificación</td><td>${escapeHtml(p.fechaCalif)}</td></tr>`:''}
+      </table>
+      ${webLink?`<div style="margin-top:6px;">${webLink}</div>`:''}
+    `, { maxWidth: 280 });
+    marker.addTo(_seiaMarkersLayer);
+    bounds.push([p.lat, p.lon]);
+  });
+  if (bounds.length) { try { _seiaMap.fitBounds(bounds, { padding: [30,30], maxZoom: 9 }); } catch(e){} }
+  setTimeout(() => { if (_seiaMap) _seiaMap.invalidateSize(); }, 100);
+}
+
+async function importarExcelSeia(fileList) {
+  if (!fileList || !fileList.length) return;
+  const file = fileList[0];
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    if (!rows.length) { alert('La hoja está vacía o no se pudo leer.'); return; }
+    const nuevos = _seiaFilasAProyectos(rows);
+    if (!nuevos.length) { alert('No se reconocieron proyectos. Verifica que exista la columna "Nombre del Proyecto".'); return; }
+    const sinGeo = nuevos.filter(p => p.lat == null).length;
+    const reemplazar = proyectosSeia.length
+      ? confirm(`Se leyeron ${nuevos.length} proyecto(s).\n\nAceptar = REEMPLAZAR los ${proyectosSeia.length} actuales.\nCancelar = AGREGAR a los existentes.`)
+      : true;
+    proyectosSeia = reemplazar ? nuevos : proyectosSeia.concat(nuevos);
+    await guardarProyectosSeia();
+    seiaFiltros = { tamano:'', sector:'', estado:'' };
+    renderSeia();
+    if (sinGeo) setTimeout(() => alert(`${nuevos.length - sinGeo} proyecto(s) ubicados en el mapa. ${sinGeo} sin ubicación reconocida (comuna/región no encontrada) — igualmente quedan guardados.`), 200);
+  } catch(e) {
+    console.error('[seia] error importando:', e);
+    alert('No se pudo leer el archivo. Asegúrate de que sea .xlsx, .xls o .csv válido.');
+  }
+}
+
+// Botón del sidebar SEIA
+const _seiaBtn = $('seiaBtn');
+if (_seiaBtn) _seiaBtn.addEventListener('click', () => {
+  if (_vistaSeiaActiva) cerrarVistaSeia(); else abrirVistaSeia();
 });
 
 // --- Respaldo: exportar / importar todo el estado ---
