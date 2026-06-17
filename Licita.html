@@ -3975,6 +3975,30 @@
     margin-right: 3px;
   }
 
+  /* === Marker de humedal (Inventario MMA) === */
+  .humedal-marker {
+    width: 20px;
+    height: 20px;
+    border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg);
+    background: #0E7490;
+    color: white;
+    border: 2px solid white;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .humedal-marker > span { transform: rotate(45deg); }
+  .humedal-marker.tipo-rio { background: #2563EB; }
+  .humedal-marker.tipo-intermareales { background: #0891B2; }
+  .humedal-marker.tipo-tranque { background: #0D9488; }
+  .humedal-marker.tipo-lacustre { background: #4F46E5; }
+  .humedal-marker.tipo-otro { background: #0E7490; }
+
   /* Marcador de pozo en el mapa (rombo verde oscuro, más chico que los de proyectos) */
   .pozo-marker {
     width: 12px;
@@ -6030,6 +6054,11 @@
             <span class="pozos-toggle-track"><span class="pozos-toggle-thumb"></span></span>
             <span class="pozos-toggle-label">💧 Agua <span class="pozos-toggle-count" data-agua-count>—</span></span>
           </label>
+          <label class="pozos-toggle" title="Mostrar/ocultar humedales del Inventario Nacional (MMA) — Región de Atacama">
+            <input type="checkbox" id="humedalesTogglePanel" />
+            <span class="pozos-toggle-track"><span class="pozos-toggle-thumb"></span></span>
+            <span class="pozos-toggle-label">🐦 Humedales <span class="pozos-toggle-count" data-humedales-count>—</span></span>
+          </label>
           <label class="pozos-toggle" title="Mostrar/ocultar botaderos / escombreras">
             <input type="checkbox" id="botaderoTogglePanel" />
             <span class="pozos-toggle-track"><span class="pozos-toggle-thumb"></span></span>
@@ -7184,6 +7213,72 @@ function actualizarBadgeMinasPECount() {
 }
 
 // === FIN MINAS DE PERÚ ===[{"id":"mina_pe_01","rank":1,"nombre":"Southern Perú (Cuajone)","region":"Moquegua","provincia":"Mariscal Nieto","lat":-17.04,"lon":-70.70889,"propietarios":"Grupo México (88.9% de participación indirecta)","produccion":"~411,000 TMF Cobre (Total Southern)","mineral":"cobre"},{"id":"mina_pe_02","rank":2,"nombre":"Minera Las Bambas","region":"Apurímac","provincia":"Cotabambas","lat":-14.09889,"lon":-72.31972,"propietarios":"MMG Limited (62.5%), Guoxin (22.5%), CITIC Metal (15.0%)","produccion":"~410,834 TMF Cobre","mineral":"cobre"},{"id":"mina_pe_03","rank":3,"nombre":"Sociedad Minera Cerro Verde","region":"Arequipa","provincia":"Arequipa","lat":-16.53722,"lon":-71.64,"propietarios":"Freeport-McMoRan (53.56%), SMM CV (21%), Buenaventura (19.58%)","produccion":"~407,000 TMF Cobre","mineral":"cobre"},{"id":"mina_pe_04","rank":4,"nombre":"Compañía Minera Antamina","region":"Áncash","provincia":"Huari","lat":-9.53667,"lon":-77.05861,"propietarios":"BHP (33.75%), Glencore (33.75%), Teck (22.5%), Mitsubishi (10%)","produccion":"~404,000 TMF Cobre / ~530,000 TMF Zinc","mineral":"cobre"},{"id":"mina_pe_05","rank":5,"nombre":"Anglo American Quellaveco","region":"Moquegua","provincia":"Mariscal Nieto","lat":-17.11944,"lon":-70.76944,"propietarios":"Anglo American plc (60%), Mitsubishi Corporation (40%)","produccion":"~310,200 TMF Cobre","mineral":"cobre"},{"id":"mina_pe_06","rank":6,"nombre":"Minera Chinalco (Toromocho)","region":"Junín","provincia":"Yauli","lat":-11.59889,"lon":-76.1375,"propietarios":"Aluminum Corporation of China (Chinalco) - 100%","produccion":"~230,000 TMF Cobre","mineral":"cobre"},{"id":"mina_pe_07","rank":7,"nombre":"Mina Antapacay","region":"Cusco","provincia":"Espinar","lat":-14.93,"lon":-71.39278,"propietarios":"Glencore PLC (Suiza) - 100%","produccion":"~140,000 TMF Cobre","mineral":"cobre"},{"id":"mina_pe_08","rank":8,"nombre":"Mina Constancia","region":"Cusco","provincia":"Chumbivilcas","lat":-14.43722,"lon":-71.80111,"propietarios":"Hudbay Minerals Inc. (Canadá) - 100%","produccion":"~90,000 TMF Cobre","mineral":"cobre"},{"id":"mina_pe_09","rank":9,"nombre":"Nexa Resources (Cerro Lindo)","region":"Ica","provincia":"Chincha","lat":-13.06389,"lon":-75.975,"propietarios":"Nexa Resources (Grupo Votorantim - Brasil)","produccion":"~75,000 TMF Zinc","mineral":"polimetalica"},{"id":"mina_pe_10","rank":10,"nombre":"Mina San Rafael (Minsur)","region":"Puno","provincia":"Melgar","lat":-14.23472,"lon":-70.43667,"propietarios":"Grupo Breca (Capitales peruanos) - 100%","produccion":"~25,000 TMF Estaño","mineral":"estano"},{"id":"mina_pe_11","rank":11,"nombre":"Mina Marcona","region":"Ica","provincia":"Nazca","lat":-15.2025,"lon":-75.10972,"propietarios":"Shougang Corporation (China) - 100%","produccion":"~13.5 Millones TMF Hierro","mineral":"hierro"},{"id":"mina_pe_12","rank":12,"nombre":"Minera Poderosa","region":"La Libertad","provincia":"Pataz","lat":-7.75,"lon":-77.58333,"propietarios":"Empresa de Capitales Peruanos (Familia Arias)","produccion":"~290,000 Oz Oro","mineral":"oro"},{"id":"mina_pe_13","rank":13,"nombre":"Minera Yanacocha","region":"Cajamarca","provincia":"Cajamarca","lat":-6.97917,"lon":-78.50889,"propietarios":"Newmont Corporation (EE. UU.) - 100%","produccion":"~260,000 Oz Oro","mineral":"oro"},{"id":"mina_pe_14","rank":14,"nombre":"Mina Inmaculada","region":"Ayacucho","provincia":"Paucar del Sara Sara","lat":-15.05917,"lon":-73.18,"propietarios":"Hochschild Mining PLC (Reino Unido / Perú)","produccion":"~170,000 Oz Oro equivalente","mineral":"oro"},{"id":"mina_pe_15","rank":15,"nombre":"Mina Tambomayo","region":"Arequipa","provincia":"Caylloma","lat":-15.15833,"lon":-71.73889,"propietarios":"Compañía de Minas Buenaventura (Perú) - 100%","produccion":"~45,000 Oz Oro / 2.1M Oz Plata","mineral":"oro"},{"id":"mina_pe_16","rank":16,"nombre":"Southern Perú (Toquepala)","region":"Tacna","provincia":"Jorge Basadre","lat":-17.245,"lon":-70.61389,"propietarios":"Grupo México (88.9% de participación indirecta)","produccion":"(Producción sumada en puesto 1)","mineral":"cobre"},{"id":"mina_pe_17","rank":17,"nombre":"Mina Shahuindo","region":"Cajamarca","provincia":"Cajabamba","lat":-7.42778,"lon":-78.01389,"propietarios":"Pan American Silver (Canadá) - 100%","produccion":"~140,000 Oz Oro","mineral":"oro"},{"id":"mina_pe_18","rank":18,"nombre":"Mina Pierina","region":"Áncash","provincia":"Huaraz","lat":-9.44306,"lon":-77.58417,"propietarios":"Barrick Gold Corporation (Canadá) - 100%","produccion":"En proceso de cierre / Monitoreo ambiental","mineral":"oro"},{"id":"mina_pe_19","rank":19,"nombre":"Mina Arenavi / Orcopampa","region":"Arequipa","provincia":"Castilla","lat":-15.26806,"lon":-72.3425,"propietarios":"Compañía de Minas Buenaventura (Perú) - 100%","produccion":"~75,000 Oz Oro","mineral":"oro"},{"id":"mina_pe_20","rank":20,"nombre":"Mina Raura","region":"Lima / Huánuco","provincia":"Lauricocha","lat":-10.47222,"lon":-76.73611,"propietarios":"Minsur S.A. (Grupo Breca - Perú)","produccion":"~30,000 TMF Zinc / Plomo / Plata","mineral":"plata"}];
+
+// ============================================================================
+// === HUMEDALES (Inventario Nacional de Humedales — MMA, Región de Atacama) ===
+// ============================================================================
+// Dataset embebido: 53 humedales de la Región de Atacama (Inventario MMA).
+// Fuente: KMZ Humedales_Region_03_Atacama. Cada item es el centroide del
+// polígono original con su metadata (código, tipo, subtipo, hectáreas).
+const HUMEDALES = [{"id":"hum_03_HUR-03-12-P01","nombre":"Carrizalillo","lat":-29.10396,"lon":-71.40639,"codigo":"HUR-03-12-P01","tipo":"Tranque","subtipo":"Tranque","hectareas":"0.14"},{"id":"hum_03_HUR-03-12-P03","nombre":"Carrizalillo","lat":-29.10577,"lon":-71.39802,"codigo":"HUR-03-12-P03","tipo":"Tranque","subtipo":"Tranque","hectareas":"0.12"},{"id":"hum_03_HUR-03-04-P01","nombre":"Paseo Ribereño","lat":-28.58217,"lon":-70.75581,"codigo":"HUR-03-04-P01","tipo":"Río","subtipo":"Río","hectareas":"44.08"},{"id":"hum_03_HUR-03-02-P04","nombre":"Rio Salado","lat":-26.39187,"lon":-70.06743,"codigo":"HUR-03-02-P04","tipo":"Río","subtipo":"Río","hectareas":"58.5"},{"id":"hum_03_HUR-03-02-P07","nombre":"Rio Salado","lat":-26.34401,"lon":-70.56797,"codigo":"HUR-03-02-P07","tipo":"Río","subtipo":"Río","hectareas":"116.95"},{"id":"hum_03_HUR-03-02-P09","nombre":"Rio Salado","lat":-26.43036,"lon":-70.26869,"codigo":"HUR-03-02-P09","tipo":"Río","subtipo":"Río","hectareas":"59.83"},{"id":"hum_03_HUR-03-03-P01","nombre":"Rio Copiapo","lat":-27.36609,"lon":-70.34731,"codigo":"HUR-03-03-P01","tipo":"Río","subtipo":"Río","hectareas":"63.03"},{"id":"hum_03_HUR-03-03-P05","nombre":"Rio Copiapo","lat":-27.42557,"lon":-70.2736,"codigo":"HUR-03-03-P05","tipo":"Río","subtipo":"Río","hectareas":"6.9"},{"id":"hum_03_HUR-03-03-P06","nombre":"Rio Copiapo","lat":-27.5026,"lon":-70.26769,"codigo":"HUR-03-03-P06","tipo":"Río","subtipo":"Río","hectareas":"60.31"},{"id":"hum_03_HUR-03-04-P03","nombre":"Rio Huasco","lat":-28.49944,"lon":-71.10696,"codigo":"HUR-03-04-P03","tipo":"Río","subtipo":"Río","hectareas":"144.32"},{"id":"hum_03_HUR-03-04-P04","nombre":"Rio Huasco","lat":-28.48114,"lon":-71.15534,"codigo":"HUR-03-04-P04","tipo":"Río","subtipo":"Río","hectareas":"123.31"},{"id":"hum_03_HUR-03-04-P07","nombre":"Rio Huasco","lat":-28.51696,"lon":-70.99298,"codigo":"HUR-03-04-P07","tipo":"Río","subtipo":"Río","hectareas":"587.31"},{"id":"hum_03_HUR-03-02-P01","nombre":"Rio Salado","lat":-26.37344,"lon":-69.5367,"codigo":"HUR-03-02-P01","tipo":"Río","subtipo":"Río","hectareas":"31.64"},{"id":"hum_03_HUR-03-02-P02","nombre":"Rio Salado","lat":-26.3638,"lon":-70.52021,"codigo":"HUR-03-02-P02","tipo":"Río","subtipo":"Río","hectareas":"15.24"},{"id":"hum_03_HUR-03-02-P03","nombre":"Rio Salado","lat":-26.34218,"lon":-69.82723,"codigo":"HUR-03-02-P03","tipo":"Río","subtipo":"Río","hectareas":"30.5"},{"id":"hum_03_HUR-03-02-P05","nombre":"Rio Salado","lat":-26.42489,"lon":-70.19397,"codigo":"HUR-03-02-P05","tipo":"Río","subtipo":"Río","hectareas":"1.7"},{"id":"hum_03_HUR-03-02-P06","nombre":"Rio Salado","lat":-26.42043,"lon":-70.18062,"codigo":"HUR-03-02-P06","tipo":"Río","subtipo":"Río","hectareas":"7.32"},{"id":"hum_03_HUR-03-02-P08","nombre":"Rio Salado","lat":-26.39304,"lon":-70.42942,"codigo":"HUR-03-02-P08","tipo":"Río","subtipo":"Río","hectareas":"329.0"},{"id":"hum_03_HUR-03-02-P10","nombre":"Rio Salado","lat":-26.41993,"lon":-70.15094,"codigo":"HUR-03-02-P10","tipo":"Río","subtipo":"Río","hectareas":"6.57"},{"id":"hum_03_HUR-03-02-P11","nombre":"Rio Salado","lat":-26.42742,"lon":-70.19882,"codigo":"HUR-03-02-P11","tipo":"Río","subtipo":"Río","hectareas":"0.64"},{"id":"hum_03_HUR-03-02-P12","nombre":"Rio Salado","lat":-26.40062,"lon":-69.59323,"codigo":"HUR-03-02-P12","tipo":"Río","subtipo":"Río","hectareas":"12.69"},{"id":"hum_03_HUR-03-03-P02","nombre":"Rio Copiapo","lat":-27.33406,"lon":-70.55504,"codigo":"HUR-03-03-P02","tipo":"Río","subtipo":"Río","hectareas":"220.5"},{"id":"hum_03_HUR-03-03-P03","nombre":"Rio Copiapo","lat":-27.35738,"lon":-70.71488,"codigo":"HUR-03-03-P03","tipo":"Río","subtipo":"Río","hectareas":"129.12"},{"id":"hum_03_HUR-03-03-P04","nombre":"Rio Copiapo","lat":-27.33598,"lon":-70.81403,"codigo":"HUR-03-03-P04","tipo":"Río","subtipo":"Río","hectareas":"155.73"},{"id":"hum_03_HUR-03-03-P07","nombre":"Rio Copiapo","lat":-27.56331,"lon":-70.26327,"codigo":"HUR-03-03-P07","tipo":"Río","subtipo":"Río","hectareas":"0.06"},{"id":"hum_03_HUR-03-03-P08","nombre":"Rio Copiapo","lat":-27.71181,"lon":-70.19558,"codigo":"HUR-03-03-P08","tipo":"Río","subtipo":"Río","hectareas":"53.16"},{"id":"hum_03_HUR-03-03-P09","nombre":"Rio Copiapo","lat":-27.8877,"lon":-70.05723,"codigo":"HUR-03-03-P09","tipo":"Río","subtipo":"Río","hectareas":"37.65"},{"id":"hum_03_HUR-03-04-P05","nombre":"Rio Huasco","lat":-28.5481,"lon":-70.8467,"codigo":"HUR-03-04-P05","tipo":"Río","subtipo":"Río","hectareas":"343.72"},{"id":"hum_03_HUR-03-04-P06","nombre":"Rio Huasco","lat":-28.52732,"lon":-70.91498,"codigo":"HUR-03-04-P06","tipo":"Río","subtipo":"Río","hectareas":"14.22"},{"id":"hum_03_HUR-03-04-P08","nombre":"Rio Huasco","lat":-28.52892,"lon":-70.9172,"codigo":"HUR-03-04-P08","tipo":"Río","subtipo":"Río","hectareas":"4.35"},{"id":"hum_03_HUR-03-04-P09","nombre":"Rio Huasco","lat":-28.63975,"lon":-70.69245,"codigo":"HUR-03-04-P09","tipo":"Río","subtipo":"Río","hectareas":"26.42"},{"id":"hum_03_HUR-03-04-P10","nombre":"Rio Huasco","lat":-28.67472,"lon":-70.64986,"codigo":"HUR-03-04-P10","tipo":"Río","subtipo":"Río","hectareas":"2.16"},{"id":"hum_03_HUR-03-07-P04","nombre":"Des. Rio Copiapo","lat":-27.33172,"lon":-70.90084,"codigo":"HUR-03-07-P04","tipo":"Río","subtipo":"Río","hectareas":"63.12"},{"id":"hum_03_HUR-03-04-P02","nombre":"Rio Huasco","lat":-28.59744,"lon":-70.72985,"codigo":"HUR-03-04-P02","tipo":"Río","subtipo":"Río","hectareas":"1.84"},{"id":"hum_03_HUR-03-01-P01","nombre":"Des. Rio El Salado","lat":-26.34389,"lon":-70.62372,"codigo":"HUR-03-01-P01","tipo":"Intermareales","subtipo":"","hectareas":"13.83"},{"id":"hum_03_HUR-03-01-P02","nombre":"Des. Rio El Salado","lat":-26.33785,"lon":-70.62408,"codigo":"HUR-03-01-P02","tipo":"Intermareales","subtipo":"","hectareas":"25.4"},{"id":"hum_03_HUR-03-05","nombre":"Humedal Huasco","lat":-28.46108,"lon":-71.20491,"codigo":"HUR-03-05","tipo":"Intermareales","subtipo":"","hectareas":"93.95"},{"id":"hum_03_HUR-03-08","nombre":"Humedal Carrizal Bajo","lat":-28.09022,"lon":-71.14147,"codigo":"HUR-03-08","tipo":"Intermareales","subtipo":"","hectareas":"37.96"},{"id":"hum_03_HUR-03-07-P01","nombre":"Des. Rio Copiapo","lat":-27.29639,"lon":-70.93377,"codigo":"HUR-03-07-P01","tipo":"Intermareales","subtipo":"","hectareas":"0.01"},{"id":"hum_03_HUR-03-04-P11","nombre":"Rio Huasco","lat":-28.44182,"lon":-71.18985,"codigo":"HUR-03-04-P11","tipo":"Intermareales","subtipo":"","hectareas":"22.12"},{"id":"hum_03_HUR-03-04-P12","nombre":"Rio Huasco","lat":-28.44522,"lon":-71.19778,"codigo":"HUR-03-04-P12","tipo":"Intermareales","subtipo":"","hectareas":"142.87"},{"id":"hum_03_HUR-03-07-P02","nombre":"Des. Rio Copiapo","lat":-27.29731,"lon":-70.93232,"codigo":"HUR-03-07-P02","tipo":"Intermareales","subtipo":"","hectareas":"47.52"},{"id":"hum_03_HUR-03-07-P03","nombre":"Des. Rio Copiapo","lat":-27.31755,"lon":-70.92445,"codigo":"HUR-03-07-P03","tipo":"Intermareales","subtipo":"","hectareas":"127.47"},{"id":"hum_03_HUR-03-12-P02","nombre":"Carrizalillo","lat":-29.1039,"lon":-71.40891,"codigo":"HUR-03-12-P02","tipo":"Sin Clasificar","subtipo":"Sin Clasificar","hectareas":"0.3"},{"id":"hum_03_HUR-03-12-P04","nombre":"Carrizalillo","lat":-29.1031,"lon":-71.40467,"codigo":"HUR-03-12-P04","tipo":"Sin Clasificar","subtipo":"Sin Clasificar","hectareas":"0.18"},{"id":"hum_03_HUR-03-13","nombre":"Playa Carrizalillo","lat":-29.09015,"lon":-71.46798,"codigo":"HUR-03-13","tipo":"Sin Clasificar","subtipo":"Sin Clasificar","hectareas":"2.88"},{"id":"hum_03_HUR-03-06","nombre":"Humedal Punta Alcalde","lat":-28.58324,"lon":-71.29486,"codigo":"HUR-03-06","tipo":"Sin Clasificar","subtipo":"Sin Clasificar","hectareas":"36.91"},{"id":"hum_03_HUR-03-09","nombre":"Humedal Totoral","lat":-27.89689,"lon":-70.91691,"codigo":"HUR-03-09","tipo":"Sin Clasificar","subtipo":"Sin Clasificar","hectareas":"100.64"},{"id":"hum_03_HUR-03-10-P01","nombre":"Sector Qda. San Juan","lat":-28.83072,"lon":-71.26503,"codigo":"HUR-03-10-P01","tipo":"Sin Clasificar","subtipo":"Sin Clasificar","hectareas":"346.05"},{"id":"hum_03_HUR-03-10-P02","nombre":"Sector Qda. San Juan","lat":-28.83054,"lon":-71.39879,"codigo":"HUR-03-10-P02","tipo":"Sin Clasificar","subtipo":"Sin Clasificar","hectareas":"48.69"},{"id":"hum_03_HUR-03-10-P03","nombre":"Sector Qda. San Juan","lat":-28.81105,"lon":-71.3618,"codigo":"HUR-03-10-P03","tipo":"Sin Clasificar","subtipo":"Sin Clasificar","hectareas":"30.64"},{"id":"hum_03_HUR-03-11-P01","nombre":"Humedal Caleta Totoral","lat":-27.83253,"lon":-71.07963,"codigo":"HUR-03-11-P01","tipo":"Sin Clasificar","subtipo":"Sin Clasificar","hectareas":"11.03"},{"id":"hum_03_HUR-03-11-P02","nombre":"Humedal Caleta Totoral","lat":-27.83105,"lon":-71.08587,"codigo":"HUR-03-11-P02","tipo":"Sin Clasificar","subtipo":"Sin Clasificar","hectareas":"5.34"}];
+
+const HUMEDALES_VISIBLE_DB_KEY = 'humedales_visible';
+let humedalesCapaVisible = false;
+async function cargarFlagHumedalesVisible() {
+  try {
+    const rec = await dbGet(HUMEDALES_VISIBLE_DB_KEY);
+    humedalesCapaVisible = !!(rec && rec.value);
+  } catch (e) { humedalesCapaVisible = false; }
+}
+async function guardarFlagHumedalesVisible(v) {
+  humedalesCapaVisible = !!v;
+  try { await dbPut({ id: HUMEDALES_VISIBLE_DB_KEY, value: humedalesCapaVisible }); } catch (e) {}
+}
+
+// Normaliza el tipo a una clase CSS de color.
+function _humedalTipoClase(tipo) {
+  const t = (tipo || '').toLowerCase();
+  if (t.indexOf('r\u00edo') >= 0 || t.indexOf('rio') >= 0 || t.indexOf('ribere') >= 0) return 'tipo-rio';
+  if (t.indexOf('intermareal') >= 0 || t.indexOf('estuar') >= 0 || t.indexOf('marino') >= 0) return 'tipo-intermareales';
+  if (t.indexOf('tranque') >= 0 || t.indexOf('almacen') >= 0) return 'tipo-tranque';
+  if (t.indexOf('lacustre') >= 0 || t.indexOf('lagun') >= 0 || t.indexOf('lago') >= 0) return 'tipo-lacustre';
+  return 'tipo-otro';
+}
+
+// Pinta los humedales como capa clickeable en un mapa Leaflet. Devuelve LayerGroup.
+function pintarHumedalesEnMapa(map, opts = {}) {
+  if (typeof L === 'undefined' || !map) return null;
+  const grupo = L.layerGroup();
+  for (const h of HUMEDALES) {
+    const icon = L.divIcon({
+      className: '',
+      html: '<div class="humedal-marker ' + _humedalTipoClase(h.tipo) + '" title="' + escapeHtml(h.nombre) + '"><span>\ud83d\udc26</span></div>',
+      iconSize: [20, 20],
+      iconAnchor: [10, 18],
+      popupAnchor: [0, -16],
+    });
+    const marker = L.marker([h.lat, h.lon], { icon, zIndexOffset: -40 });
+    let popup =
+      '<div class="mina-popup-title">' + escapeHtml(h.nombre) + '</div>' +
+      '<div class="mina-popup-meta">\ud83d\udc26 Humedal' + (h.tipo ? ' \u00b7 ' + escapeHtml(h.tipo) : '') + '</div>';
+    if (h.codigo) popup += '<div class="mina-popup-row"><span class="mina-popup-lbl">\ud83c\udff7\ufe0f C\u00f3digo:</span> ' + escapeHtml(h.codigo) + '</div>';
+    if (h.subtipo && h.subtipo !== h.tipo) popup += '<div class="mina-popup-row"><span class="mina-popup-lbl">\ud83d\udcd0 Subtipo:</span> ' + escapeHtml(h.subtipo) + '</div>';
+    if (h.hectareas) popup += '<div class="mina-popup-row"><span class="mina-popup-lbl">\ud83d\udccf Superficie:</span> ' + escapeHtml(h.hectareas) + ' ha</div>';
+    popup += '<div class="mina-popup-row" style="font-size:10px;color:var(--text-mute);margin-top:6px;">Fuente: Inventario Nacional de Humedales \u2014 MMA</div>';
+    marker.bindPopup(popup);
+    grupo.addLayer(marker);
+  }
+  grupo.addTo(map);
+  return grupo;
+}
+
+// Actualiza el badge "(N)" del toggle de humedales
+function actualizarBadgeHumedalesCount() {
+  document.querySelectorAll('[data-humedales-count]').forEach(el => {
+    el.textContent = HUMEDALES.length;
+  });
+}
+// === FIN HUMEDALES ===
 
 // Lista predefinida de materiales (editable: el usuario puede escribir uno custom).
 const MATERIALES_ARIDOS_PREDEFINIDOS = [
@@ -26706,6 +26801,29 @@ async function renderMapaLicitaciones(enrichedList) {
     });
   }
 
+  // Capa de humedales (Inventario MMA)
+  function _renderCapaHumedalesPanel() {
+    if (window.__licMapHumedalesLayer) {
+      window.__licMapHumedalesLayer.remove();
+      window.__licMapHumedalesLayer = null;
+    }
+    if (!humedalesCapaVisible) return;
+    window.__licMapHumedalesLayer = pintarHumedalesEnMapa(map);
+  }
+  _renderCapaHumedalesPanel();
+  actualizarBadgeHumedalesCount();
+
+  // Toggle Humedales
+  const toggleHumedales = document.getElementById('humedalesTogglePanel');
+  if (toggleHumedales && !toggleHumedales.dataset.bound) {
+    toggleHumedales.dataset.bound = '1';
+    toggleHumedales.checked = humedalesCapaVisible;
+    toggleHumedales.addEventListener('change', async () => {
+      await guardarFlagHumedalesVisible(toggleHumedales.checked);
+      _renderCapaHumedalesPanel();
+    });
+  }
+
   // Capas y controles de Agua / Botaderos
   if (typeof conectarControlesExtra === 'function') {
     conectarControlesExtra(map);
@@ -29346,6 +29464,7 @@ async function iniciarApp() {
           cargarFiltroEstado(),
           cargarPozosPropios(),
           cargarFlagMinasPEVisible(),
+          cargarFlagHumedalesVisible(),
           cargarPuntosExtra('agua'),
           cargarPuntosExtra('botadero'),
           cargarFlagExtraVisible('agua'),
