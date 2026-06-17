@@ -29123,7 +29123,7 @@ let proyectosSeia = [];
 let _vistaSeiaActiva = false;
 let _seiaMap = null;
 let _seiaMarkersLayer = null;
-let seiaFiltros = { tamano: new Set(), sector: new Set(), estado: new Set() };
+let seiaFiltros = { tamano: new Set(), sector: new Set(), estado: new Set(), texto: '' };
 let _seiaDropdownAbierto = null; // 'tamano' | 'sector' | 'estado' | null
 
 const SEIA_COMUNAS_CL = {
@@ -29238,10 +29238,12 @@ function _seiaFilasAProyectos(rows) {
   return out;
 }
 function _seiaFiltrar(lista) {
+  const txt = _seiaNorm(seiaFiltros.texto || '');
   return lista.filter(p => {
     if (seiaFiltros.tamano.size && !seiaFiltros.tamano.has(_seiaTamano(p.inversion))) return false;
     if (seiaFiltros.sector.size && !seiaFiltros.sector.has(_seiaNorm(p.sector))) return false;
     if (seiaFiltros.estado.size && !seiaFiltros.estado.has(_seiaNorm(p.estado))) return false;
+    if (txt && !_seiaNorm(p.nombre || '').includes(txt)) return false;
     return true;
   });
 }
@@ -29336,7 +29338,7 @@ function renderSeia() {
   const filtrados = _seiaFiltrar(proyectosSeia);
   const conGeo = filtrados.filter(p => p.lat != null && p.lon != null).length;
   const sinGeo = filtrados.length - conGeo;
-  const hayFiltro = seiaFiltros.tamano.size || seiaFiltros.sector.size || seiaFiltros.estado.size;
+  const hayFiltro = seiaFiltros.tamano.size || seiaFiltros.sector.size || seiaFiltros.estado.size || (seiaFiltros.texto && seiaFiltros.texto.trim());
 
   cont.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
@@ -29346,6 +29348,15 @@ function renderSeia() {
       </div>
       <button class="btn-secondary seia-cargar" style="font-size:12px;">⬆ Cargar Excel/CSV</button>
       ${proyectosSeia.length ? '<button class="seia-limpiar" style="font-size:12px;border:1px solid var(--border);background:var(--surface);border-radius:7px;padding:7px 12px;cursor:pointer;font-family:inherit;color:#DC2626;">🗑 Vaciar</button>' : ''}
+    </div>
+
+    <div style="margin-bottom:10px;">
+      <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">Buscar por nombre de proyecto</label>
+      <div style="position:relative;">
+        <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);opacity:0.5;font-size:13px;pointer-events:none;">🔍</span>
+        <input type="text" id="seiaBuscarNombre" placeholder="Escribe parte del nombre del proyecto…" value="${escapeHtml(seiaFiltros.texto || '')}" style="width:100%;box-sizing:border-box;padding:8px 32px 8px 30px;border:1px solid ${(seiaFiltros.texto && seiaFiltros.texto.trim())?'var(--accent)':'var(--border)'};border-radius:7px;font-family:inherit;font-size:12.5px;background:${(seiaFiltros.texto && seiaFiltros.texto.trim())?'var(--accent-lightest)':'var(--surface)'};color:var(--text);" />
+        ${(seiaFiltros.texto && seiaFiltros.texto.trim()) ? '<button id="seiaBuscarClear" title="Limpiar búsqueda" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:transparent;cursor:pointer;font-size:14px;color:var(--text-mute);line-height:1;padding:2px 4px;">✕</button>' : ''}
+      </div>
     </div>
 
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:flex-start;">
@@ -29390,13 +29401,13 @@ function renderSeia() {
   const limpiarBtn = cont.querySelector('.seia-limpiar');
   if (limpiarBtn) limpiarBtn.onclick = async () => {
     if (!confirm('¿Vaciar todos los proyectos SEIA cargados? Esta acción afecta al equipo.')) return;
-    proyectosSeia = []; seiaFiltros = { tamano:new Set(), sector:new Set(), estado:new Set() }; _seiaDropdownAbierto = null;
+    proyectosSeia = []; seiaFiltros = { tamano:new Set(), sector:new Set(), estado:new Set(), texto:'' }; _seiaDropdownAbierto = null;
     await guardarProyectosSeia(); renderSeia();
   };
   const limpiarFiltros = cont.querySelector('.seia-limpiar-filtros');
   if (limpiarFiltros) limpiarFiltros.onclick = (e) => {
     e.preventDefault();
-    seiaFiltros = { tamano:new Set(), sector:new Set(), estado:new Set() }; _seiaDropdownAbierto = null;
+    seiaFiltros = { tamano:new Set(), sector:new Set(), estado:new Set(), texto:'' }; _seiaDropdownAbierto = null;
     renderSeia();
   };
 
@@ -29446,6 +29457,23 @@ function _seiaWireFiltros() {
       _seiaActualizarTrasFiltro();
     };
   });
+
+  // Búsqueda por nombre de proyecto (filtrado en vivo, sin recrear el header)
+  const inpBuscar = cont.querySelector('#seiaBuscarNombre');
+  if (inpBuscar) {
+    inpBuscar.oninput = () => {
+      seiaFiltros.texto = inpBuscar.value;
+      _seiaActualizarTrasFiltro();
+    };
+  }
+  const btnClear = cont.querySelector('#seiaBuscarClear');
+  if (btnClear) {
+    btnClear.onclick = (e) => {
+      e.stopPropagation();
+      seiaFiltros.texto = '';
+      renderSeia();
+    };
+  }
 }
 
 // Tras togglear un checkbox: re-pinta mapa, contador y etiqueta del botón,
@@ -29607,7 +29635,7 @@ async function importarExcelSeia(fileList) {
       : true;
     proyectosSeia = reemplazar ? nuevos : proyectosSeia.concat(nuevos);
     await guardarProyectosSeia();
-    seiaFiltros = { tamano:new Set(), sector:new Set(), estado:new Set() }; _seiaDropdownAbierto = null;
+    seiaFiltros = { tamano:new Set(), sector:new Set(), estado:new Set(), texto:'' }; _seiaDropdownAbierto = null;
     renderSeia();
     if (sinGeo) setTimeout(() => alert(`${nuevos.length - sinGeo} proyecto(s) ubicados en el mapa. ${sinGeo} sin ubicación reconocida (comuna/región no encontrada) — igualmente quedan guardados.`), 200);
   } catch(e) {
