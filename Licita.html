@@ -6339,6 +6339,7 @@
         <button id="proveedoresBtn" style="width:100%;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🏢 Proveedores</button>
         <button id="seiaBtn" style="width:100%;margin-top:6px;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🌎 Proyectos SEIA</button>
         <button id="minerasBtn" style="width:100%;margin-top:6px;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">⛏️ Mineras CL</button>
+        <button id="comboBtn" style="width:100%;margin-top:6px;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🗺️ SEIA + Mineras</button>
       </div>
 
       <!-- Contenido del tema activo -->
@@ -28351,7 +28352,7 @@ function renderConsultaTemas() {
     </button>`;
   }).join('');
   cont.querySelectorAll('.consulta-tema-btn').forEach(btn => {
-    btn.onclick = () => { _vistaProveedoresActiva = false; _vistaSeiaActiva = false; _vistaMinerasActiva = false; consultaTemaActivoId = btn.dataset.id; renderConsultaTemas(); renderConsultaTemaContenido(); };
+    btn.onclick = () => { _vistaProveedoresActiva = false; _vistaSeiaActiva = false; _vistaMinerasActiva = false; _vistaComboActiva = false; consultaTemaActivoId = btn.dataset.id; renderConsultaTemas(); renderConsultaTemaContenido(); };
   });
   // Reflejar estado del botón Proveedores
   const pbtn = $('proveedoresBtn');
@@ -28378,6 +28379,15 @@ function renderConsultaTemas() {
       mbtn.style.background = 'var(--accent)'; mbtn.style.color = '#FFFFFF'; mbtn.style.borderColor = 'var(--accent)';
     } else {
       mbtn.style.background = '#EAF3EC'; mbtn.style.color = 'var(--accent)'; mbtn.style.borderColor = '#C7D9C9';
+    }
+  }
+  // Reflejar estado del botón SEIA + Mineras
+  const cbtn = $('comboBtn');
+  if (cbtn) {
+    if (_vistaComboActiva) {
+      cbtn.style.background = 'var(--accent)'; cbtn.style.color = '#FFFFFF'; cbtn.style.borderColor = 'var(--accent)';
+    } else {
+      cbtn.style.background = '#EAF3EC'; cbtn.style.color = 'var(--accent)'; cbtn.style.borderColor = '#C7D9C9';
     }
   }
 }
@@ -28815,6 +28825,7 @@ function abrirVistaProveedores() {
   _vistaProveedoresActiva = true;
   _vistaSeiaActiva = false;
   _vistaMinerasActiva = false;
+  _vistaComboActiva = false;
   if (!proveedorActivoId && proveedoresLista.length) proveedorActivoId = proveedoresLista[0].id;
   renderConsultaTemas();
   (async () => { await cargarProveedores(); if (!proveedorActivoId && proveedoresLista.length) proveedorActivoId = proveedoresLista[0].id; renderProveedores(); })();
@@ -29233,6 +29244,7 @@ function abrirVistaSeia() {
   _vistaSeiaActiva = true;
   _vistaProveedoresActiva = false;
   _vistaMinerasActiva = false;
+  _vistaComboActiva = false;
   renderConsultaTemas();
   (async () => { await cargarProyectosSeia(); renderSeia(); })();
 }
@@ -29271,6 +29283,7 @@ function abrirVistaMineras() {
   _vistaMinerasActiva = true;
   _vistaProveedoresActiva = false;
   _vistaSeiaActiva = false;
+  _vistaComboActiva = false;
   renderConsultaTemas();
   (async () => { await cargarFlagMinerasVisible(); renderMineras(); })();
 }
@@ -29457,6 +29470,239 @@ function _minerasWire(cont) {
     renderMineras();
   };
 }
+
+// ============================================================================
+// MÓDULO COMBINADO — vista "SEIA + Mineras" en Consulta de Referencia
+// Un solo mapa con DOS capas conmutables de forma independiente (toggles) y un
+// filtro de REGIÓN multi-select que aplica a AMBAS capas a la vez.
+// Reutiliza datos y helpers de SEIA (proyectosSeia, _seiaColorEstado) y de
+// Mineras (MINERAS_CL, pintarMinerasEnMapa). No toca las vistas individuales.
+// ============================================================================
+let _vistaComboActiva = false;
+let _comboMap = null;
+let _comboSeiaLayer = null;
+let _comboMinerasLayer = null;
+let comboCapaSeia = true;
+let comboCapaMineras = true;
+let comboRegionesActivas = new Set(); // vacío = todas las regiones
+
+// Regiones de Chile ordenadas norte→sur. Clave normalizada (vía _seiaNorm) + etiqueta.
+const COMBO_REGIONES = [
+  ['arica y parinacota', 'Arica y Parinacota'],
+  ['tarapaca', 'Tarapacá'],
+  ['antofagasta', 'Antofagasta'],
+  ['atacama', 'Atacama'],
+  ['coquimbo', 'Coquimbo'],
+  ['valparaiso', 'Valparaíso'],
+  ['metropolitana', 'Metropolitana'],
+  ["o'higgins", "O'Higgins"],
+  ['maule', 'Maule'],
+  ['nuble', 'Ñuble'],
+  ['biobio', 'Biobío'],
+  ['araucania', 'Araucanía'],
+  ['los rios', 'Los Ríos'],
+  ['los lagos', 'Los Lagos'],
+  ['aysen', 'Aysén'],
+  ['magallanes', 'Magallanes'],
+];
+
+// ¿La región (string libre) pasa el filtro? Set vacío = todas.
+function _comboNormRegion(regionStr) {
+  let r = _seiaNorm(regionStr || '');
+  // Canonicaliza variantes frecuentes en los datos SEIA a las claves de COMBO_REGIONES.
+  if (r.includes('metropolitana')) return 'metropolitana';
+  if (r.includes('higgins')) return "o'higgins";
+  if (r.includes('biobio') || r.includes('bio bio')) return 'biobio';
+  if (r.includes('araucania')) return 'araucania';
+  if (r.includes('arica')) return 'arica y parinacota';
+  if (r === 'tarapaca' || r.includes('tarapaca')) return 'tarapaca';
+  if (r.includes('aysen') || r.includes('aisen')) return 'aysen';
+  if (r.includes('magallanes')) return 'magallanes';
+  if (r.includes('los rios')) return 'los rios';
+  if (r.includes('los lagos')) return 'los lagos';
+  if (r.includes('valparaiso')) return 'valparaiso';
+  if (r.includes('nuble')) return 'nuble';
+  if (r.includes('coquimbo')) return 'coquimbo';
+  if (r.includes('atacama')) return 'atacama';
+  if (r.includes('antofagasta')) return 'antofagasta';
+  if (r.includes('maule')) return 'maule';
+  return r;
+}
+function _comboRegionMatch(regionStr) {
+  if (comboRegionesActivas.size === 0) return true;
+  return comboRegionesActivas.has(_comboNormRegion(regionStr));
+}
+// Proyectos SEIA con coordenadas y que pasan el filtro de región.
+function _comboSeiaFiltrados() {
+  return proyectosSeia.filter(p => p.lat != null && p.lon != null && _comboRegionMatch(p.region));
+}
+// Faenas mineras que pasan el filtro de región (categoría completa).
+function _comboMinerasFiltrados() {
+  return MINERAS_CL.filter(f => _comboRegionMatch(f.g));
+}
+
+function abrirVistaCombo() {
+  _vistaComboActiva = true;
+  _vistaProveedoresActiva = false;
+  _vistaSeiaActiva = false;
+  _vistaMinerasActiva = false;
+  renderConsultaTemas();
+  (async () => {
+    await cargarProyectosSeia();
+    await cargarFlagMinerasVisible();
+    renderCombo();
+  })();
+}
+function cerrarVistaCombo() {
+  _vistaComboActiva = false;
+  if (_comboMap) { try { _comboMap.remove(); } catch(e){} _comboMap = null; _comboSeiaLayer = null; _comboMinerasLayer = null; }
+  renderConsultaTemas();
+  renderConsultaTemaContenido();
+}
+
+function renderCombo() {
+  const cont = $('consultaTemaContenido');
+  if (!cont) return;
+  if (_comboMap) { try { _comboMap.remove(); } catch(e){} _comboMap = null; _comboSeiaLayer = null; _comboMinerasLayer = null; }
+
+  const seiaF = _comboSeiaFiltrados();
+  const minF = _comboMinerasFiltrados();
+  const hayRegionFiltro = comboRegionesActivas.size > 0;
+
+  // Chips de región (las de Mineras se marcan, pero el filtro aplica a ambas capas)
+  const chips = COMBO_REGIONES.map(([k, label]) => {
+    const activo = comboRegionesActivas.has(k);
+    return `<label class="combo-reg-chk" data-reg="${escapeHtml(k)}" style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid ${activo?'var(--accent)':'var(--border)'};border-radius:20px;cursor:pointer;font-size:12px;background:${activo?'var(--accent-lightest)':'var(--surface)'};color:var(--text);user-select:none;">
+      <input type="checkbox" class="combo-reg-cb" data-reg="${escapeHtml(k)}" ${activo?'checked':''} style="width:13px;height:13px;cursor:pointer;accent-color:var(--accent);">
+      <span>${escapeHtml(label)}</span>
+    </label>`;
+  }).join('');
+
+  cont.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:200px;">
+        <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-serif);">🗺️ SEIA + Mineras</div>
+        <div style="font-size:12px;color:var(--text-soft);">Dos capas en un mapa · filtro de región aplica a ambas</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:10px 12px;background:var(--surface-warm);border:1px solid var(--border);border-radius:10px;">
+      <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;user-select:none;">
+        <input type="checkbox" id="comboToggleSeia" ${comboCapaSeia?'checked':''} style="width:16px;height:16px;cursor:pointer;accent-color:#059669;">
+        <span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#059669;border:1.5px solid #fff;box-shadow:0 0 0 1px #059669;"></span>
+        <b>Proyectos SEIA</b> <span style="color:var(--text-soft);font-size:12px;">(<span id="comboCountSeia">${seiaF.length}</span>)</span>
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;user-select:none;">
+        <input type="checkbox" id="comboToggleMineras" ${comboCapaMineras?'checked':''} style="width:16px;height:16px;cursor:pointer;accent-color:#B45309;">
+        <span style="display:inline-block;width:10px;height:10px;background:#B45309;transform:rotate(45deg);"></span>
+        <b>Mineras CL</b> <span style="color:var(--text-soft);font-size:12px;">(<span id="comboCountMineras">${minF.length}</span>)</span>
+      </label>
+    </div>
+
+    <div style="margin-bottom:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:5px;">
+        <label style="font-size:11px;font-weight:600;color:var(--text-soft);">Filtrar por región (una o varias) — aplica a ambas capas</label>
+        <button id="comboRegTodas" style="font-size:11.5px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:2px 4px;">↺ Todas las regiones</button>
+      </div>
+      <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;">${chips}</div>
+      ${hayRegionFiltro ? `<div style="font-size:11px;color:var(--text-mute);margin-top:6px;">Filtrando ${comboRegionesActivas.size} región(es). <a href="#" id="comboLimpiarReg" style="color:var(--accent-dark);text-decoration:underline;">Limpiar</a></div>` : '<div style="font-size:11px;color:var(--text-mute);margin-top:6px;">Sin filtro: mostrando todas las regiones.</div>'}
+    </div>
+
+    <div id="comboMap" style="width:100%;height:520px;border:1px solid var(--border);border-radius:12px;overflow:hidden;"></div>
+    <div style="font-size:11px;color:var(--text-mute);margin-top:6px;">
+      🟢 SEIA: color por estado (verde aprobado · ámbar en calificación · rojo rechazado).
+      🔶 Mineras: 🟤 metálico / ⚪ industrial. Fuentes: SEIA y Catastro Sernageomin.
+    </div>
+  `;
+
+  _comboWire(cont);
+  setTimeout(() => { _comboPintarMapa(); }, 30);
+}
+
+// Crea el mapa y pinta ambas capas según los toggles.
+function _comboPintarMapa() {
+  const div = $('comboMap');
+  if (!div || typeof L === 'undefined') return;
+  if (_comboMap) { try { _comboMap.remove(); } catch(e){} _comboMap = null; }
+  _comboMap = L.map(div, { scrollWheelZoom: true }).setView([-31.5, -70.8], 4);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap, © CARTO', subdomains: 'abcd', maxZoom: 19,
+  }).addTo(_comboMap);
+  _comboSeiaLayer = null;
+  _comboMinerasLayer = null;
+  _comboPintarSeia();
+  _comboPintarMineras();
+  setTimeout(() => { if (_comboMap) _comboMap.invalidateSize(); }, 100);
+}
+
+// Capa SEIA: circleMarker por estado (reutiliza _seiaColorEstado).
+function _comboPintarSeia() {
+  if (!_comboMap) return;
+  if (_comboSeiaLayer) { try { _comboMap.removeLayer(_comboSeiaLayer); } catch(e){} _comboSeiaLayer = null; }
+  if (!comboCapaSeia) return;
+  const grupo = L.layerGroup();
+  _comboSeiaFiltrados().forEach(p => {
+    const color = _seiaColorEstado(p.estado);
+    const marker = L.circleMarker([p.lat, p.lon], {
+      radius: 7, color: '#fff', weight: 1.5, fillColor: color, fillOpacity: 0.9,
+    });
+    const ubic = [p.comuna, p.region].filter(Boolean).join(', ');
+    let popup = '<div style="font-weight:700;font-size:13px;margin-bottom:4px;">' + escapeHtml(p.nombre || '—') + '</div>';
+    popup += '<div style="font-size:11px;color:#059669;font-weight:600;margin-bottom:3px;">🌎 Proyecto SEIA</div>';
+    if (p.titular) popup += '<div style="font-size:11.5px;"><b>Titular:</b> ' + escapeHtml(p.titular) + '</div>';
+    if (ubic) popup += '<div style="font-size:11.5px;"><b>Ubicación:</b> ' + escapeHtml(ubic) + '</div>';
+    if (p.estado) popup += '<div style="font-size:11.5px;"><b>Estado:</b> <span style="color:' + color + ';font-weight:600;">' + escapeHtml(p.estado) + '</span></div>';
+    if (p.sector) popup += '<div style="font-size:11.5px;"><b>Sector:</b> ' + escapeHtml(p.sector) + '</div>';
+    marker.bindPopup(popup, { maxWidth: 280 });
+    marker.addTo(grupo);
+  });
+  grupo.addTo(_comboMap);
+  _comboSeiaLayer = grupo;
+}
+
+// Capa Mineras: reutiliza pintarMinerasEnMapa con la lista filtrada por región.
+function _comboPintarMineras() {
+  if (!_comboMap) return;
+  if (_comboMinerasLayer) { try { _comboMap.removeLayer(_comboMinerasLayer); } catch(e){} _comboMinerasLayer = null; }
+  if (!comboCapaMineras) return;
+  _comboMinerasLayer = pintarMinerasEnMapa(_comboMap, _comboMinerasFiltrados());
+}
+
+// Actualiza contadores del header sin recrearlo.
+function _comboActualizarContadores() {
+  const cs = $('comboCountSeia'); if (cs) cs.textContent = _comboSeiaFiltrados().length;
+  const cm = $('comboCountMineras'); if (cm) cm.textContent = _comboMinerasFiltrados().length;
+}
+
+function _comboWire(cont) {
+  // Toggle capa SEIA
+  const tSeia = cont.querySelector('#comboToggleSeia');
+  if (tSeia) tSeia.onchange = () => { comboCapaSeia = tSeia.checked; _comboPintarSeia(); };
+  // Toggle capa Mineras
+  const tMin = cont.querySelector('#comboToggleMineras');
+  if (tMin) tMin.onchange = () => { comboCapaMineras = tMin.checked; _comboPintarMineras(); };
+  // Chips de región (aplican a ambas capas en vivo)
+  cont.querySelectorAll('.combo-reg-cb').forEach(cb => {
+    cb.onchange = () => {
+      const reg = cb.dataset.reg;
+      if (cb.checked) comboRegionesActivas.add(reg); else comboRegionesActivas.delete(reg);
+      const chip = cb.closest('.combo-reg-chk');
+      if (chip) {
+        chip.style.borderColor = cb.checked ? 'var(--accent)' : 'var(--border)';
+        chip.style.background = cb.checked ? 'var(--accent-lightest)' : 'var(--surface)';
+      }
+      _comboPintarSeia();
+      _comboPintarMineras();
+      _comboActualizarContadores();
+    };
+  });
+  // "Todas las regiones" (limpia el filtro)
+  const btnTodas = cont.querySelector('#comboRegTodas');
+  if (btnTodas) btnTodas.onclick = (e) => { e.preventDefault(); comboRegionesActivas = new Set(); renderCombo(); };
+  const limpiarReg = cont.querySelector('#comboLimpiarReg');
+  if (limpiarReg) limpiarReg.onclick = (e) => { e.preventDefault(); comboRegionesActivas = new Set(); renderCombo(); };
+}
+
 
 // Devuelve [{valor, label, count}] para un campo, sobre la lista total.
 function _seiaOpcionesCount(campo) {
@@ -29830,6 +30076,12 @@ if (_seiaBtn) _seiaBtn.addEventListener('click', () => {
 const _minerasBtn = $('minerasBtn');
 if (_minerasBtn) _minerasBtn.addEventListener('click', () => {
   if (_vistaMinerasActiva) cerrarVistaMineras(); else abrirVistaMineras();
+});
+
+// Botón del sidebar SEIA + Mineras
+const _comboBtn = $('comboBtn');
+if (_comboBtn) _comboBtn.addEventListener('click', () => {
+  if (_vistaComboActiva) cerrarVistaCombo(); else abrirVistaCombo();
 });
 
 // --- Respaldo: exportar / importar todo el estado ---
