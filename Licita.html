@@ -29485,6 +29485,10 @@ let _comboMinerasLayer = null;
 let comboCapaSeia = true;
 let comboCapaMineras = true;
 let comboRegionesActivas = new Set(); // vacío = todas las regiones
+// Filtros propios de cada capa (replican los de las vistas individuales)
+let comboSeiaFiltros = { tamano: new Set(), sector: new Set(), estado: new Set(), texto: '' };
+let comboMinerasCats = new Set(MINERAS_CATEGORIAS_TODAS); // todas por defecto
+let comboMinerasTexto = '';
 
 // Regiones de Chile ordenadas norte→sur. Clave normalizada (vía _seiaNorm) + etiqueta.
 const COMBO_REGIONES = [
@@ -29532,13 +29536,47 @@ function _comboRegionMatch(regionStr) {
   if (comboRegionesActivas.size === 0) return true;
   return comboRegionesActivas.has(_comboNormRegion(regionStr));
 }
-// Proyectos SEIA con coordenadas y que pasan el filtro de región.
+// Proyectos SEIA: con coordenadas + región + filtros propios (tamaño/sector/estado/texto).
 function _comboSeiaFiltrados() {
-  return proyectosSeia.filter(p => p.lat != null && p.lon != null && _comboRegionMatch(p.region));
+  const txt = _seiaNorm(comboSeiaFiltros.texto || '');
+  return proyectosSeia.filter(p => {
+    if (p.lat == null || p.lon == null) return false;
+    if (!_comboRegionMatch(p.region)) return false;
+    if (comboSeiaFiltros.tamano.size && !comboSeiaFiltros.tamano.has(_seiaTamano(p.inversion))) return false;
+    if (comboSeiaFiltros.sector.size && !comboSeiaFiltros.sector.has(_seiaNorm(p.sector))) return false;
+    if (comboSeiaFiltros.estado.size && !comboSeiaFiltros.estado.has(_seiaNorm(p.estado))) return false;
+    if (txt && !_seiaNorm(p.nombre || '').includes(txt)) return false;
+    return true;
+  });
 }
-// Faenas mineras que pasan el filtro de región (categoría completa).
+// Faenas mineras: región + categoría + texto (empresa o faena).
 function _comboMinerasFiltrados() {
-  return MINERAS_CL.filter(f => _comboRegionMatch(f.g));
+  const txt = _seiaNorm(comboMinerasTexto || '');
+  return MINERAS_CL.filter(f => {
+    if (!_comboRegionMatch(f.g)) return false;
+    if (!comboMinerasCats.has(f.c || 'S/C')) return false;
+    if (txt) {
+      const emp = _seiaNorm(f.e || ''), fae = _seiaNorm(f.n || '');
+      if (!emp.includes(txt) && !fae.includes(txt)) return false;
+    }
+    return true;
+  });
+}
+// Opciones (valor normalizado + etiqueta + conteo) para un campo SEIA, sobre proyectosSeia.
+function _comboSeiaOpciones(campo) {
+  const m = new Map();
+  proyectosSeia.forEach(p => {
+    let val, label;
+    if (campo === 'tamano') { val = _seiaTamano(p.inversion); label = val; }
+    else { const raw = (p[campo]||'').trim(); if (!raw) return; val = _seiaNorm(raw); label = raw; }
+    if (!m.has(val)) m.set(val, { valor: val, label, count: 0 });
+    m.get(val).count++;
+  });
+  let arr = Array.from(m.values());
+  const ORDEN = ['Pequeño','Mediano','Grande','Megaproyecto','Sin dato'];
+  if (campo === 'tamano') arr.sort((a,b)=>ORDEN.indexOf(a.label)-ORDEN.indexOf(b.label));
+  else arr.sort((a,b)=>a.label.localeCompare(b.label,'es'));
+  return arr;
 }
 
 function abrirVistaCombo() {
@@ -29568,8 +29606,11 @@ function renderCombo() {
   const seiaF = _comboSeiaFiltrados();
   const minF = _comboMinerasFiltrados();
   const hayRegionFiltro = comboRegionesActivas.size > 0;
+  const hayFiltroSeia = comboSeiaFiltros.tamano.size || comboSeiaFiltros.sector.size || comboSeiaFiltros.estado.size || (comboSeiaFiltros.texto && comboSeiaFiltros.texto.trim());
+  const todasCats = comboMinerasCats.size === MINERAS_CATEGORIAS_TODAS.length;
+  const hayFiltroMin = !todasCats || (comboMinerasTexto && comboMinerasTexto.trim());
 
-  // Chips de región (las de Mineras se marcan, pero el filtro aplica a ambas capas)
+  // Chips de región (filtro aplica a ambas capas)
   const chips = COMBO_REGIONES.map(([k, label]) => {
     const activo = comboRegionesActivas.has(k);
     return `<label class="combo-reg-chk" data-reg="${escapeHtml(k)}" style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid ${activo?'var(--accent)':'var(--border)'};border-radius:20px;cursor:pointer;font-size:12px;background:${activo?'var(--accent-lightest)':'var(--surface)'};color:var(--text);user-select:none;">
@@ -29578,11 +29619,33 @@ function renderCombo() {
     </label>`;
   }).join('');
 
+  // Multiselect SEIA (tamaño/sector/estado) como <select multiple> compactos
+  const mkSelect = (campo, titulo, accent) => {
+    const ops = _comboSeiaOpciones(campo);
+    const sel = comboSeiaFiltros[campo];
+    const items = ops.map(o => `<option value="${escapeHtml(o.valor)}" ${sel.has(o.valor)?'selected':''}>${escapeHtml(o.label)} (${o.count})</option>`).join('');
+    return `<div style="flex:1;min-width:150px;">
+      <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">${titulo}${sel.size?` · ${sel.size}`:''}</label>
+      <select multiple class="combo-seia-sel" data-campo="${campo}" size="4" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid ${sel.size?accent:'var(--border)'};border-radius:7px;font-family:inherit;font-size:11.5px;background:var(--surface);color:var(--text);">${items}</select>
+    </div>`;
+  };
+
+  // Chips de categoría Mineras
+  const catCount = {}; MINERAS_CATEGORIAS_TODAS.forEach(c=>catCount[c]=0);
+  MINERAS_CL.forEach(f=>{const c=f.c||'S/C'; if(catCount[c]!=null)catCount[c]++;});
+  const catChips = MINERAS_CATEGORIAS_TODAS.map(c => {
+    const activo = comboMinerasCats.has(c);
+    return `<label class="combo-cat-chk" data-cat="${escapeHtml(c)}" style="display:inline-flex;align-items:center;gap:5px;padding:5px 9px;border:1px solid ${activo?'#B45309':'var(--border)'};border-radius:18px;cursor:pointer;font-size:11.5px;background:${activo?'#FBEEE0':'var(--surface)'};color:var(--text);user-select:none;">
+      <input type="checkbox" class="combo-cat-cb" data-cat="${escapeHtml(c)}" ${activo?'checked':''} style="width:13px;height:13px;cursor:pointer;accent-color:#B45309;">
+      <span>Cat. ${escapeHtml(c)} <span style="color:var(--text-soft);">${catCount[c]||0}</span></span>
+    </label>`;
+  }).join('');
+
   cont.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
       <div style="flex:1;min-width:200px;">
         <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-serif);">🗺️ SEIA + Mineras</div>
-        <div style="font-size:12px;color:var(--text-soft);">Dos capas en un mapa · filtro de región aplica a ambas</div>
+        <div style="font-size:12px;color:var(--text-soft);">Dos capas en un mapa · región aplica a ambas · cada capa con sus propios filtros</div>
       </div>
     </div>
 
@@ -29601,17 +29664,49 @@ function renderCombo() {
 
     <div style="margin-bottom:10px;">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:5px;">
-        <label style="font-size:11px;font-weight:600;color:var(--text-soft);">Filtrar por región (una o varias) — aplica a ambas capas</label>
+        <label style="font-size:11px;font-weight:600;color:var(--text-soft);">Región (una o varias) — aplica a AMBAS capas</label>
         <button id="comboRegTodas" style="font-size:11.5px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:2px 4px;">↺ Todas las regiones</button>
       </div>
       <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;">${chips}</div>
-      ${hayRegionFiltro ? `<div style="font-size:11px;color:var(--text-mute);margin-top:6px;">Filtrando ${comboRegionesActivas.size} región(es). <a href="#" id="comboLimpiarReg" style="color:var(--accent-dark);text-decoration:underline;">Limpiar</a></div>` : '<div style="font-size:11px;color:var(--text-mute);margin-top:6px;">Sin filtro: mostrando todas las regiones.</div>'}
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface);">
+        <div style="font-size:12px;font-weight:700;color:#059669;margin-bottom:8px;">🌎 Filtros SEIA</div>
+        <div style="margin-bottom:8px;">
+          <div style="position:relative;">
+            <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);opacity:0.5;font-size:12px;pointer-events:none;">🔍</span>
+            <input type="text" id="comboSeiaBuscar" placeholder="Buscar proyecto por nombre…" value="${escapeHtml(comboSeiaFiltros.texto||'')}" style="width:100%;box-sizing:border-box;padding:7px 9px 7px 28px;border:1px solid ${comboSeiaFiltros.texto?'#059669':'var(--border)'};border-radius:7px;font-family:inherit;font-size:12px;background:var(--surface);color:var(--text);" />
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${mkSelect('tamano','Tamaño','#059669')}
+          ${mkSelect('estado','Estado','#059669')}
+          ${mkSelect('sector','Sector','#059669')}
+        </div>
+        ${hayFiltroSeia?`<div style="margin-top:7px;"><a href="#" id="comboSeiaLimpiar" style="font-size:11px;color:var(--accent-dark);text-decoration:underline;">Limpiar filtros SEIA</a></div>`:''}
+      </div>
+      <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface);">
+        <div style="font-size:12px;font-weight:700;color:#B45309;margin-bottom:8px;">⛏️ Filtros Mineras</div>
+        <div style="margin-bottom:8px;">
+          <div style="position:relative;">
+            <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);opacity:0.5;font-size:12px;pointer-events:none;">🔍</span>
+            <input type="text" id="comboMinBuscar" placeholder="Buscar por empresa o faena…" value="${escapeHtml(comboMinerasTexto||'')}" style="width:100%;box-sizing:border-box;padding:7px 9px 7px 28px;border:1px solid ${comboMinerasTexto?'#B45309':'var(--border)'};border-radius:7px;font-family:inherit;font-size:12px;background:var(--surface);color:var(--text);" />
+          </div>
+        </div>
+        <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:5px;">Categoría</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          ${catChips}
+          <button id="comboCatTodas" style="font-size:11px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:3px 5px;">↺ Todas</button>
+        </div>
+        ${hayFiltroMin?`<div style="margin-top:7px;"><a href="#" id="comboMinLimpiar" style="font-size:11px;color:var(--accent-dark);text-decoration:underline;">Limpiar filtros Mineras</a></div>`:''}
+      </div>
     </div>
 
     <div id="comboMap" style="width:100%;height:520px;border:1px solid var(--border);border-radius:12px;overflow:hidden;"></div>
     <div style="font-size:11px;color:var(--text-mute);margin-top:6px;">
       🟢 SEIA: color por estado (verde aprobado · ámbar en calificación · rojo rechazado).
-      🔶 Mineras: 🟤 metálico / ⚪ industrial. Fuentes: SEIA y Catastro Sernageomin.
+      🔶 Mineras: 🟤 metálico / ⚪ industrial. Mapa físico por defecto (cambia la capa base arriba a la derecha).
     </div>
   `;
 
@@ -29619,15 +29714,33 @@ function renderCombo() {
   setTimeout(() => { _comboPintarMapa(); }, 30);
 }
 
-// Crea el mapa y pinta ambas capas según los toggles.
+// Crea el mapa (físico por defecto) y pinta ambas capas según los toggles.
 function _comboPintarMapa() {
   const div = $('comboMap');
   if (!div || typeof L === 'undefined') return;
   if (_comboMap) { try { _comboMap.remove(); } catch(e){} _comboMap = null; }
   _comboMap = L.map(div, { scrollWheelZoom: true }).setView([-31.5, -70.8], 4);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-    attribution: '© OpenStreetMap, © CARTO', subdomains: 'abcd', maxZoom: 19,
-  }).addTo(_comboMap);
+  // Capas base con selector; arranca en RELIEVE (físico) por defecto.
+  const maxZoom = 19;
+  const capaRelieve = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Physical_Map/MapServer/tile/{z}/{y}/{x}', {
+    attribution: '© Esri, USGS, NOAA', maxZoom: 8,
+  });
+  const capaTerreno = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenTopoMap (CC-BY-SA)', subdomains: 'abc', maxZoom: 17,
+  });
+  const capaNormal = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap, © CARTO', subdomains: 'abcd', maxZoom: maxZoom,
+  });
+  const capaSatelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: '© Esri, Maxar, Earthstar Geographics', maxZoom: maxZoom,
+  });
+  capaRelieve.addTo(_comboMap); // ← físico por defecto
+  L.control.layers({
+    '⛰️ Relieve (físico)': capaRelieve,
+    '🏔️ Terreno (topo)': capaTerreno,
+    '🗺️ Mapa': capaNormal,
+    '🛰️ Satélite': capaSatelite,
+  }, {}, { position: 'topright', collapsed: true }).addTo(_comboMap);
   _comboSeiaLayer = null;
   _comboMinerasLayer = null;
   _comboPintarSeia();
@@ -29675,12 +29788,14 @@ function _comboActualizarContadores() {
 }
 
 function _comboWire(cont) {
+  const refrescarTodo = () => { _comboPintarSeia(); _comboPintarMineras(); _comboActualizarContadores(); };
   // Toggle capa SEIA
   const tSeia = cont.querySelector('#comboToggleSeia');
   if (tSeia) tSeia.onchange = () => { comboCapaSeia = tSeia.checked; _comboPintarSeia(); };
   // Toggle capa Mineras
   const tMin = cont.querySelector('#comboToggleMineras');
   if (tMin) tMin.onchange = () => { comboCapaMineras = tMin.checked; _comboPintarMineras(); };
+
   // Chips de región (aplican a ambas capas en vivo)
   cont.querySelectorAll('.combo-reg-cb').forEach(cb => {
     cb.onchange = () => {
@@ -29691,16 +29806,57 @@ function _comboWire(cont) {
         chip.style.borderColor = cb.checked ? 'var(--accent)' : 'var(--border)';
         chip.style.background = cb.checked ? 'var(--accent-lightest)' : 'var(--surface)';
       }
+      refrescarTodo();
+    };
+  });
+  const btnTodas = cont.querySelector('#comboRegTodas');
+  if (btnTodas) btnTodas.onclick = (e) => { e.preventDefault(); comboRegionesActivas = new Set(); renderCombo(); };
+
+  // --- Filtros SEIA ---
+  const seiaBuscar = cont.querySelector('#comboSeiaBuscar');
+  if (seiaBuscar) seiaBuscar.oninput = () => { comboSeiaFiltros.texto = seiaBuscar.value; _comboPintarSeia(); _comboActualizarContadores(); };
+  cont.querySelectorAll('.combo-seia-sel').forEach(sel => {
+    sel.onchange = () => {
+      const campo = sel.dataset.campo;
+      const set = new Set();
+      Array.from(sel.selectedOptions).forEach(o => set.add(o.value));
+      comboSeiaFiltros[campo] = set;
       _comboPintarSeia();
+      _comboActualizarContadores();
+    };
+  });
+  const seiaLimpiar = cont.querySelector('#comboSeiaLimpiar');
+  if (seiaLimpiar) seiaLimpiar.onclick = (e) => {
+    e.preventDefault();
+    comboSeiaFiltros = { tamano:new Set(), sector:new Set(), estado:new Set(), texto:'' };
+    renderCombo();
+  };
+
+  // --- Filtros Mineras ---
+  const minBuscar = cont.querySelector('#comboMinBuscar');
+  if (minBuscar) minBuscar.oninput = () => { comboMinerasTexto = minBuscar.value; _comboPintarMineras(); _comboActualizarContadores(); };
+  cont.querySelectorAll('.combo-cat-cb').forEach(cb => {
+    cb.onchange = () => {
+      const cat = cb.dataset.cat;
+      if (cb.checked) comboMinerasCats.add(cat); else comboMinerasCats.delete(cat);
+      const chip = cb.closest('.combo-cat-chk');
+      if (chip) {
+        chip.style.borderColor = cb.checked ? '#B45309' : 'var(--border)';
+        chip.style.background = cb.checked ? '#FBEEE0' : 'var(--surface)';
+      }
       _comboPintarMineras();
       _comboActualizarContadores();
     };
   });
-  // "Todas las regiones" (limpia el filtro)
-  const btnTodas = cont.querySelector('#comboRegTodas');
-  if (btnTodas) btnTodas.onclick = (e) => { e.preventDefault(); comboRegionesActivas = new Set(); renderCombo(); };
-  const limpiarReg = cont.querySelector('#comboLimpiarReg');
-  if (limpiarReg) limpiarReg.onclick = (e) => { e.preventDefault(); comboRegionesActivas = new Set(); renderCombo(); };
+  const catTodas = cont.querySelector('#comboCatTodas');
+  if (catTodas) catTodas.onclick = (e) => { e.preventDefault(); comboMinerasCats = new Set(MINERAS_CATEGORIAS_TODAS); renderCombo(); };
+  const minLimpiar = cont.querySelector('#comboMinLimpiar');
+  if (minLimpiar) minLimpiar.onclick = (e) => {
+    e.preventDefault();
+    comboMinerasCats = new Set(MINERAS_CATEGORIAS_TODAS);
+    comboMinerasTexto = '';
+    renderCombo();
+  };
 }
 
 
