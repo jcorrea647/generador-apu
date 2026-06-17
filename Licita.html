@@ -6118,19 +6118,6 @@
             <span class="pozos-toggle-track"><span class="pozos-toggle-thumb"></span></span>
             <span class="pozos-toggle-label">🐦 Humedales <span class="pozos-toggle-count" data-humedales-count>—</span></span>
           </label>
-          <label class="pozos-toggle" title="Mostrar/ocultar faenas mineras (Hoja1 — instalaciones activas, regiones XV a VII). Agrupadas por cercanía.">
-            <input type="checkbox" id="minerasTogglePanel" />
-            <span class="pozos-toggle-track"><span class="pozos-toggle-thumb"></span></span>
-            <span class="pozos-toggle-label">⛏️ Mineras CL <span class="pozos-toggle-count" data-mineras-count>—</span></span>
-          </label>
-          <div class="mineras-cat-filtro" id="minerasCatFiltro" title="Filtrar faenas mineras por categoría (selección múltiple)">
-            <span class="mineras-cat-titulo">Categoría:</span>
-            <label class="mineras-cat-chk"><input type="checkbox" data-mineras-cat="A" /> A</label>
-            <label class="mineras-cat-chk"><input type="checkbox" data-mineras-cat="B" /> B</label>
-            <label class="mineras-cat-chk"><input type="checkbox" data-mineras-cat="C" /> C</label>
-            <label class="mineras-cat-chk"><input type="checkbox" data-mineras-cat="D" /> D</label>
-            <label class="mineras-cat-chk"><input type="checkbox" data-mineras-cat="S/C" /> S/C</label>
-          </div>
           <label class="pozos-toggle" title="Mostrar/ocultar botaderos / escombreras">
             <input type="checkbox" id="botaderoTogglePanel" />
             <span class="pozos-toggle-track"><span class="pozos-toggle-thumb"></span></span>
@@ -6351,6 +6338,7 @@
         <div style="border-top:1px dashed var(--border-soft);margin:10px 0;"></div>
         <button id="proveedoresBtn" style="width:100%;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🏢 Proveedores</button>
         <button id="seiaBtn" style="width:100%;margin-top:6px;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🌎 Proyectos SEIA</button>
+        <button id="minerasBtn" style="width:100%;margin-top:6px;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">⛏️ Mineras CL</button>
       </div>
 
       <!-- Contenido del tema activo -->
@@ -7404,8 +7392,13 @@ function contarMinerasFiltradas() {
 // Pinta las faenas mineras como capa agrupada (cluster) en un mapa Leaflet.
 // Devuelve el MarkerClusterGroup (o un LayerGroup normal si la librería de
 // clustering no está disponible, como fallback).
-function pintarMinerasEnMapa(map, opts = {}) {
+function pintarMinerasEnMapa(map, listaOpts) {
   if (typeof L === 'undefined' || !map) return null;
+  // Acepta una lista pre-filtrada como 2º argumento. Si no se entrega,
+  // usa MINERAS_CL filtrado por las categorías activas (retrocompatible).
+  const lista = Array.isArray(listaOpts)
+    ? listaOpts
+    : MINERAS_CL.filter(f => minerasCategoriasActivas.has(f.c || 'S/C'));
   const usarCluster = typeof L.markerClusterGroup === 'function';
   const grupo = usarCluster
     ? L.markerClusterGroup({
@@ -7424,9 +7417,7 @@ function pintarMinerasEnMapa(map, opts = {}) {
       })
     : L.layerGroup();
 
-  for (const f of MINERAS_CL) {
-    // Filtro por categoría activa (A/B/C/D/S/C)
-    if (!minerasCategoriasActivas.has(f.c || 'S/C')) continue;
+  for (const f of lista) {
     const icon = L.divIcon({
       className: '',
       html: '<div class="minera-marker ' + (f.m ? 'rec-metal' : 'rec-industrial') + '" title="' + escapeHtml(f.e) + '"></div>',
@@ -27005,47 +26996,6 @@ async function renderMapaLicitaciones(enrichedList) {
   }
 
   // Capa de faenas mineras (Hoja1, con clustering)
-  function _renderCapaMinerasPanel() {
-    if (window.__licMapMinerasLayer) {
-      window.__licMapMinerasLayer.remove();
-      window.__licMapMinerasLayer = null;
-    }
-    if (!minerasCapaVisible) return;
-    window.__licMapMinerasLayer = pintarMinerasEnMapa(map);
-  }
-  _renderCapaMinerasPanel();
-  actualizarBadgeMinerasCount();
-
-  // Toggle Mineras CL
-  const toggleMineras = document.getElementById('minerasTogglePanel');
-  if (toggleMineras && !toggleMineras.dataset.bound) {
-    toggleMineras.dataset.bound = '1';
-    toggleMineras.checked = minerasCapaVisible;
-    toggleMineras.addEventListener('change', async () => {
-      await guardarFlagMinerasVisible(toggleMineras.checked);
-      _renderCapaMinerasPanel();
-    });
-  }
-
-  // Checkboxes de filtro por categoría (A/B/C/D/S/C)
-  document.querySelectorAll('[data-mineras-cat]').forEach(chk => {
-    const cat = chk.getAttribute('data-mineras-cat');
-    chk.checked = minerasCategoriasActivas.has(cat);
-    if (!chk.dataset.bound) {
-      chk.dataset.bound = '1';
-      chk.addEventListener('change', async () => {
-        if (chk.checked) {
-          minerasCategoriasActivas.add(cat);
-        } else {
-          minerasCategoriasActivas.delete(cat);
-        }
-        await guardarMinerasCategorias();
-        actualizarBadgeMinerasCount();
-        _renderCapaMinerasPanel();
-      });
-    }
-  });
-
   // Capas y controles de Agua / Botaderos
   if (typeof conectarControlesExtra === 'function') {
     conectarControlesExtra(map);
@@ -28401,7 +28351,7 @@ function renderConsultaTemas() {
     </button>`;
   }).join('');
   cont.querySelectorAll('.consulta-tema-btn').forEach(btn => {
-    btn.onclick = () => { _vistaProveedoresActiva = false; _vistaSeiaActiva = false; consultaTemaActivoId = btn.dataset.id; renderConsultaTemas(); renderConsultaTemaContenido(); };
+    btn.onclick = () => { _vistaProveedoresActiva = false; _vistaSeiaActiva = false; _vistaMinerasActiva = false; consultaTemaActivoId = btn.dataset.id; renderConsultaTemas(); renderConsultaTemaContenido(); };
   });
   // Reflejar estado del botón Proveedores
   const pbtn = $('proveedoresBtn');
@@ -28419,6 +28369,15 @@ function renderConsultaTemas() {
       sbtn.style.background = 'var(--accent)'; sbtn.style.color = '#FFFFFF'; sbtn.style.borderColor = 'var(--accent)';
     } else {
       sbtn.style.background = '#EAF3EC'; sbtn.style.color = 'var(--accent)'; sbtn.style.borderColor = '#C7D9C9';
+    }
+  }
+  // Reflejar estado del botón Mineras CL
+  const mbtn = $('minerasBtn');
+  if (mbtn) {
+    if (_vistaMinerasActiva) {
+      mbtn.style.background = 'var(--accent)'; mbtn.style.color = '#FFFFFF'; mbtn.style.borderColor = 'var(--accent)';
+    } else {
+      mbtn.style.background = '#EAF3EC'; mbtn.style.color = 'var(--accent)'; mbtn.style.borderColor = '#C7D9C9';
     }
   }
 }
@@ -28855,6 +28814,7 @@ function _provIniciales(nombre) {
 function abrirVistaProveedores() {
   _vistaProveedoresActiva = true;
   _vistaSeiaActiva = false;
+  _vistaMinerasActiva = false;
   if (!proveedorActivoId && proveedoresLista.length) proveedorActivoId = proveedoresLista[0].id;
   renderConsultaTemas();
   (async () => { await cargarProveedores(); if (!proveedorActivoId && proveedoresLista.length) proveedorActivoId = proveedoresLista[0].id; renderProveedores(); })();
@@ -29272,6 +29232,7 @@ async function guardarProyectosSeia() {
 function abrirVistaSeia() {
   _vistaSeiaActiva = true;
   _vistaProveedoresActiva = false;
+  _vistaMinerasActiva = false;
   renderConsultaTemas();
   (async () => { await cargarProyectosSeia(); renderSeia(); })();
 }
@@ -29280,6 +29241,221 @@ function cerrarVistaSeia() {
   if (_seiaMap) { try { _seiaMap.remove(); } catch(e){} _seiaMap = null; _seiaMarkersLayer = null; }
   renderConsultaTemas();
   renderConsultaTemaContenido();
+}
+
+// ============================================================================
+// MÓDULO MINERAS CL — vista propia en Consulta de Referencia
+// Mapa Leaflet (cluster) + tabla lateral. Filtros: Categoría (A/B/C/D/S/C)
+// + buscador de texto por empresa o faena. Reutiliza MINERAS_CL y helpers.
+// ============================================================================
+let _vistaMinerasActiva = false;
+let _minerasMap = null;
+let _minerasMarkersLayer = null;
+let minerasTextoBusqueda = '';
+
+// Filtra MINERAS_CL por categorías activas + texto (empresa o faena).
+function _minerasFiltrar() {
+  const txt = _seiaNorm(minerasTextoBusqueda || '');
+  return MINERAS_CL.filter(f => {
+    if (!minerasCategoriasActivas.has(f.c || 'S/C')) return false;
+    if (txt) {
+      const emp = _seiaNorm(f.e || '');
+      const fae = _seiaNorm(f.n || '');
+      if (!emp.includes(txt) && !fae.includes(txt)) return false;
+    }
+    return true;
+  });
+}
+
+function abrirVistaMineras() {
+  _vistaMinerasActiva = true;
+  _vistaProveedoresActiva = false;
+  _vistaSeiaActiva = false;
+  renderConsultaTemas();
+  (async () => { await cargarFlagMinerasVisible(); renderMineras(); })();
+}
+function cerrarVistaMineras() {
+  _vistaMinerasActiva = false;
+  if (_minerasMap) { try { _minerasMap.remove(); } catch(e){} _minerasMap = null; _minerasMarkersLayer = null; }
+  renderConsultaTemas();
+  renderConsultaTemaContenido();
+}
+
+function renderMineras() {
+  const cont = $('consultaTemaContenido');
+  if (!cont) return;
+  if (_minerasMap) { try { _minerasMap.remove(); } catch(e){} _minerasMap = null; _minerasMarkersLayer = null; }
+
+  const filtrados = _minerasFiltrar();
+  const hayTexto = !!(minerasTextoBusqueda && minerasTextoBusqueda.trim());
+  const todasCats = minerasCategoriasActivas.size === MINERAS_CATEGORIAS_TODAS.length;
+  const hayFiltro = !todasCats || hayTexto;
+
+  // Conteo por categoría (sobre el dataset total) para mostrar al lado de cada chip
+  const countCat = {};
+  MINERAS_CATEGORIAS_TODAS.forEach(c => countCat[c] = 0);
+  MINERAS_CL.forEach(f => { const c = f.c || 'S/C'; if (countCat[c] != null) countCat[c]++; });
+
+  const chips = MINERAS_CATEGORIAS_TODAS.map(c => {
+    const activo = minerasCategoriasActivas.has(c);
+    return `<label class="mineras-cat-chk" data-cat="${escapeHtml(c)}" style="display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border:1px solid ${activo?'var(--accent)':'var(--border)'};border-radius:20px;cursor:pointer;font-size:12.5px;background:${activo?'var(--accent-lightest)':'var(--surface)'};color:var(--text);user-select:none;">
+      <input type="checkbox" class="mineras-cat-cb" data-cat="${escapeHtml(c)}" ${activo?'checked':''} style="width:14px;height:14px;cursor:pointer;accent-color:#B45309;">
+      <span>Cat. ${escapeHtml(c)}</span>
+      <span style="color:var(--text-soft);font-size:11px;">${countCat[c]||0}</span>
+    </label>`;
+  }).join('');
+
+  cont.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:200px;">
+        <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-serif);">⛏️ Mineras CL</div>
+        <div style="font-size:12px;color:var(--text-soft);"><b id="minerasCountHdr">${filtrados.length}</b> de ${MINERAS_CL.length} faenas activas · Catastro Sernageomin</div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:10px;">
+      <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">Buscar por empresa o faena</label>
+      <div style="position:relative;">
+        <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);opacity:0.5;font-size:13px;pointer-events:none;">🔍</span>
+        <input type="text" id="minerasBuscar" placeholder="Escribe parte de la empresa o el nombre de la faena…" value="${escapeHtml(minerasTextoBusqueda||'')}" style="width:100%;box-sizing:border-box;padding:8px 32px 8px 30px;border:1px solid ${hayTexto?'var(--accent)':'var(--border)'};border-radius:7px;font-family:inherit;font-size:12.5px;background:${hayTexto?'var(--accent-lightest)':'var(--surface)'};color:var(--text);" />
+        ${hayTexto ? '<button id="minerasBuscarClear" title="Limpiar búsqueda" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:transparent;cursor:pointer;font-size:14px;color:var(--text-mute);line-height:1;padding:2px 4px;">✕</button>' : ''}
+      </div>
+    </div>
+
+    <div style="margin-bottom:8px;">
+      <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:5px;">Categoría de la faena</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        ${chips}
+        <button id="minerasCatTodas" style="font-size:11.5px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:4px 6px;">↺ Todas</button>
+      </div>
+    </div>
+    ${hayFiltro ? `<div style="margin-bottom:10px;"><a href="#" id="minerasLimpiarFiltros" style="font-size:11.5px;color:var(--accent-dark);text-decoration:underline;">Limpiar filtros</a></div>` : '<div style="margin-bottom:10px;"></div>'}
+
+    <div style="display:grid;grid-template-columns:60% 40%;gap:12px;align-items:start;margin-bottom:8px;">
+      <div id="minerasMap" style="width:100%;height:460px;border:1px solid var(--border);border-radius:12px;overflow:hidden;"></div>
+      <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;max-height:460px;">
+        <div style="padding:9px 12px;border-bottom:1px solid var(--border);background:var(--surface-warm);display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <span style="font-size:12.5px;font-weight:600;color:var(--accent);">Faenas <span id="minerasTablaCount">(${filtrados.length})</span></span>
+          <span style="font-size:11px;color:var(--text-soft);">🟤 metálico · ⚪ industrial</span>
+        </div>
+        <div id="minerasTablaWrap" style="overflow-y:auto;flex:1;"></div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text-mute);margin-top:2px;">Mostrando <b id="minerasLeyendaCount">${filtrados.length}</b> faenas. Fuente: Catastro de instalaciones mineras activas (Sernageomin), regiones XV–VII.</div>
+  `;
+
+  _minerasWire(cont);
+  setTimeout(() => { _minerasPintarMapa(filtrados); _minerasPintarTabla(filtrados); }, 30);
+}
+
+// Crea el mapa Leaflet y pinta los marcadores (recreación completa).
+function _minerasPintarMapa(filtrados) {
+  const div = $('minerasMap');
+  if (!div || typeof L === 'undefined') return;
+  if (_minerasMap) { try { _minerasMap.remove(); } catch(e){} _minerasMap = null; }
+  _minerasMap = L.map(div, { scrollWheelZoom: true }).setView([-27, -70], 5);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 19, subdomains: 'abcd'
+  }).addTo(_minerasMap);
+  _minerasMarkersLayer = pintarMinerasEnMapa(_minerasMap, filtrados);
+}
+
+// Re-pinta solo marcadores sin recrear el mapa (para filtrado en vivo).
+function _minerasRepintarMarcadores(filtrados) {
+  if (!_minerasMap) { _minerasPintarMapa(filtrados); return; }
+  if (_minerasMarkersLayer) { try { _minerasMap.removeLayer(_minerasMarkersLayer); } catch(e){} }
+  _minerasMarkersLayer = pintarMinerasEnMapa(_minerasMap, filtrados);
+}
+
+// Pinta la tabla lateral (Empresa, Faena, Tipo/Recurso, Categoría, Comuna/Región).
+function _minerasPintarTabla(filtrados) {
+  const wrap = $('minerasTablaWrap');
+  if (!wrap) return;
+  if (!filtrados.length) {
+    wrap.innerHTML = '<div style="padding:24px 14px;text-align:center;color:var(--text-mute);font-size:12px;">No hay faenas para la selección actual.</div>';
+    return;
+  }
+  // Limita filas renderizadas para no congelar el navegador con miles de filas.
+  const MAX = 600;
+  const ord = filtrados.slice().sort((a,b) => (a.e||'').localeCompare(b.e||'','es'));
+  const visibles = ord.slice(0, MAX);
+  const filas = visibles.map(f => {
+    const dot = f.m ? '#B45309' : '#57534E';
+    const tipoRec = [f.t, f.r].filter(Boolean).join(' · ');
+    const ubic = [f.k, f.g].filter(Boolean).join(', ');
+    return `<tr style="border-top:1px solid var(--border-soft);">
+      <td style="padding:6px 9px;font-size:11.5px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(f.e||'')}">
+        <span style="display:inline-block;width:8px;height:8px;border-radius:2px;transform:rotate(45deg);background:${dot};margin-right:5px;vertical-align:middle;"></span>${escapeHtml(f.e||'—')}
+      </td>
+      <td style="padding:6px 9px;font-size:11px;color:var(--text-soft);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(f.n||'')}">${escapeHtml(f.n||'—')}</td>
+      <td style="padding:6px 9px;font-size:11px;color:var(--text-soft);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(tipoRec)}">${escapeHtml(tipoRec||'—')}</td>
+      <td style="padding:6px 9px;font-size:11px;text-align:center;">${escapeHtml(f.c||'S/C')}</td>
+      <td style="padding:6px 9px;font-size:11px;color:var(--text-soft);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(ubic)}">${escapeHtml(ubic||'—')}</td>
+    </tr>`;
+  }).join('');
+  const aviso = filtrados.length > MAX ? `<div style="padding:8px 12px;font-size:11px;color:var(--text-mute);text-align:center;border-top:1px solid var(--border-soft);">Mostrando las primeras ${MAX} de ${filtrados.length} faenas. Usa el buscador o las categorías para acotar.</div>` : '';
+  wrap.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="background:var(--surface-warm);position:sticky;top:0;z-index:1;">
+        <th style="text-align:left;padding:6px 9px;font-size:11px;font-weight:600;color:var(--text-soft);">Empresa</th>
+        <th style="text-align:left;padding:6px 9px;font-size:11px;font-weight:600;color:var(--text-soft);">Faena</th>
+        <th style="text-align:left;padding:6px 9px;font-size:11px;font-weight:600;color:var(--text-soft);">Tipo / Recurso</th>
+        <th style="text-align:center;padding:6px 9px;font-size:11px;font-weight:600;color:var(--text-soft);">Cat.</th>
+        <th style="text-align:left;padding:6px 9px;font-size:11px;font-weight:600;color:var(--text-soft);">Comuna / Región</th>
+      </tr></thead>
+      <tbody>${filas}</tbody>
+    </table>${aviso}`;
+}
+
+// Tras cambiar un filtro: re-pinta mapa, tabla y contadores SIN recrear el header.
+function _minerasActualizarTrasFiltro() {
+  const filtrados = _minerasFiltrar();
+  _minerasRepintarMarcadores(filtrados);
+  _minerasPintarTabla(filtrados);
+  const ids = ['minerasCountHdr', 'minerasTablaCount', 'minerasLeyendaCount'];
+  const c = $('minerasCountHdr'); if (c) c.textContent = filtrados.length;
+  const tc = $('minerasTablaCount'); if (tc) tc.textContent = `(${filtrados.length})`;
+  const lc = $('minerasLeyendaCount'); if (lc) lc.textContent = filtrados.length;
+}
+
+function _minerasWire(cont) {
+  // Checkboxes de categoría
+  cont.querySelectorAll('.mineras-cat-cb').forEach(cb => {
+    cb.onchange = () => {
+      const cat = cb.dataset.cat;
+      if (cb.checked) minerasCategoriasActivas.add(cat); else minerasCategoriasActivas.delete(cat);
+      guardarMinerasCategorias();
+      // refleja estilo del chip contenedor
+      const chip = cb.closest('.mineras-cat-chk');
+      if (chip) {
+        chip.style.borderColor = cb.checked ? 'var(--accent)' : 'var(--border)';
+        chip.style.background = cb.checked ? 'var(--accent-lightest)' : 'var(--surface)';
+      }
+      _minerasActualizarTrasFiltro();
+    };
+  });
+  // "Todas" las categorías
+  const btnTodas = cont.querySelector('#minerasCatTodas');
+  if (btnTodas) btnTodas.onclick = (e) => {
+    e.preventDefault();
+    minerasCategoriasActivas = new Set(MINERAS_CATEGORIAS_TODAS);
+    guardarMinerasCategorias();
+    renderMineras();
+  };
+  // Buscador por empresa/faena (filtrado en vivo, sin recrear header)
+  const inp = cont.querySelector('#minerasBuscar');
+  if (inp) inp.oninput = () => { minerasTextoBusqueda = inp.value; _minerasActualizarTrasFiltro(); };
+  const clr = cont.querySelector('#minerasBuscarClear');
+  if (clr) clr.onclick = (e) => { e.stopPropagation(); minerasTextoBusqueda = ''; renderMineras(); };
+  // Limpiar todos los filtros
+  const limpiar = cont.querySelector('#minerasLimpiarFiltros');
+  if (limpiar) limpiar.onclick = (e) => {
+    e.preventDefault();
+    minerasCategoriasActivas = new Set(MINERAS_CATEGORIAS_TODAS);
+    minerasTextoBusqueda = '';
+    guardarMinerasCategorias();
+    renderMineras();
+  };
 }
 
 // Devuelve [{valor, label, count}] para un campo, sobre la lista total.
@@ -29648,6 +29824,12 @@ async function importarExcelSeia(fileList) {
 const _seiaBtn = $('seiaBtn');
 if (_seiaBtn) _seiaBtn.addEventListener('click', () => {
   if (_vistaSeiaActiva) cerrarVistaSeia(); else abrirVistaSeia();
+});
+
+// Botón del sidebar Mineras CL
+const _minerasBtn = $('minerasBtn');
+if (_minerasBtn) _minerasBtn.addEventListener('click', () => {
+  if (_vistaMinerasActiva) cerrarVistaMineras(); else abrirVistaMineras();
 });
 
 // --- Respaldo: exportar / importar todo el estado ---
