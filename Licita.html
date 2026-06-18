@@ -29525,6 +29525,27 @@ let comboSeleccion = new Set();
 let _comboMarcadores = {};   // id -> { marker, tipo, baseStyle }
 let comboListaTexto = '';    // filtro rápido dentro de la lista
 let _comboDocClickWired = false; // listener global de cierre instalado una sola vez
+// Ítems eliminados permanentemente (claves estables). Se persiste en Supabase.
+let comboEliminados = new Set();
+const COMBO_ELIMINADOS_DB_KEY = 'combo_eliminados';
+
+// Clave estable para identificar una faena minera por contenido (no por índice).
+function _comboMinKey(f) {
+  return 'mink:' + _seiaNorm(f.e || '') + '|' + _seiaNorm(f.n || '') + '|' + (f.a != null ? f.a.toFixed(5) : '') + '|' + (f.o != null ? f.o.toFixed(5) : '');
+}
+// Clave estable para un proyecto SEIA.
+function _comboSeiaKey(p) {
+  return 'seiak:' + (p.id || (_seiaNorm(p.nombre || '') + '|' + _seiaNorm(p.comuna || '')));
+}
+async function cargarComboEliminados() {
+  try {
+    const rec = await dbGet(COMBO_ELIMINADOS_DB_KEY);
+    if (rec && Array.isArray(rec.value)) comboEliminados = new Set(rec.value);
+  } catch (e) {}
+}
+async function guardarComboEliminados() {
+  try { await dbPut({ id: COMBO_ELIMINADOS_DB_KEY, value: Array.from(comboEliminados) }); } catch (e) {}
+}
 
 // Regiones de Chile ordenadas norte→sur. Clave normalizada (vía _seiaNorm) + etiqueta.
 const COMBO_REGIONES = [
@@ -29577,6 +29598,7 @@ function _comboSeiaFiltrados() {
   const txt = _seiaNorm(comboSeiaFiltros.texto || '');
   return proyectosSeia.filter(p => {
     if (p.lat == null || p.lon == null) return false;
+    if (comboEliminados.has(_comboSeiaKey(p))) return false;
     if (!_comboRegionMatch(p.region)) return false;
     if (comboSeiaFiltros.tamano.size && !comboSeiaFiltros.tamano.has(_seiaTamano(p.inversion))) return false;
     if (comboSeiaFiltros.sector.size && !comboSeiaFiltros.sector.has(_seiaNorm(p.sector))) return false;
@@ -29589,6 +29611,7 @@ function _comboSeiaFiltrados() {
 function _comboMinerasFiltrados() {
   const txt = _seiaNorm(comboMinerasTexto || '');
   return MINERAS_CL.filter(f => {
+    if (comboEliminados.has(_comboMinKey(f))) return false;
     if (!_comboRegionMatch(f.g)) return false;
     if (!comboMinerasCats.has(f.c || 'S/C')) return false;
     if (txt) {
@@ -29624,6 +29647,7 @@ function abrirVistaCombo() {
   (async () => {
     await cargarProyectosSeia();
     await cargarFlagMinerasVisible();
+    await cargarComboEliminados();
     renderCombo();
   })();
 }
@@ -29930,6 +29954,7 @@ function _comboPintarMineras() {
   const txt = _seiaNorm(comboMinerasTexto || '');
   const haySelMin = comboSeleccion.size > 0;
   MINERAS_CL.forEach((f, idx) => {
+    if (comboEliminados.has(_comboMinKey(f))) return;
     if (!_comboRegionMatch(f.g)) return;
     if (!comboMinerasCats.has(f.c || 'S/C')) return;
     if (txt) {
@@ -29969,7 +29994,7 @@ function _comboActualizarContadores() {
   const cm = $('comboCountMineras'); if (cm) cm.textContent = _comboMinerasFiltrados().length;
 }
 
-// Construye la lista [{id, nombre, sub, tipo, color}] de lo visible según filtros.
+// Construye la lista [{id, nombre, sub, tipo, color, delKey}] de lo visible según filtros.
 function _comboListaItems() {
   const items = [];
   if (comboCapaSeia) {
@@ -29979,12 +30004,14 @@ function _comboListaItems() {
         nombre: p.nombre || '(sin nombre)',
         sub: [p.comuna, p.region].filter(Boolean).join(', '),
         color: _seiaColorEstado(p.estado),
+        delKey: _comboSeiaKey(p),
       });
     });
   }
   if (comboCapaMineras) {
     const txt = _seiaNorm(comboMinerasTexto || '');
     MINERAS_CL.forEach((f, idx) => {
+      if (comboEliminados.has(_comboMinKey(f))) return;
       if (!_comboRegionMatch(f.g)) return;
       if (!comboMinerasCats.has(f.c || 'S/C')) return;
       if (txt) { const emp=_seiaNorm(f.e||''), fae=_seiaNorm(f.n||''); if (!emp.includes(txt)&&!fae.includes(txt)) return; }
@@ -29994,6 +30021,7 @@ function _comboListaItems() {
         nombre: f.e || '(sin empresa)',
         sub: [f.n, f.k].filter(Boolean).join(' · '),
         color: f.m ? '#B45309' : '#57534E',
+        delKey: _comboMinKey(f),
       });
     });
   }
@@ -30026,7 +30054,9 @@ function _comboPintarListaProyectos() {
         + '<span style="flex:1;min-width:0;">'
         + '<span style="display:flex;align-items:center;gap:6px;">' + badge + '<b style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(it.nombre) + '</b></span>'
         + (it.sub ? '<span style="display:block;color:var(--text-soft);font-size:10.5px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(it.sub) + '</span>' : '')
-        + '</span></label>';
+        + '</span>'
+        + '<button class="combo-lista-del" data-delkey="' + escapeHtml(it.delKey) + '" data-nombre="' + escapeHtml(it.nombre) + '" title="Eliminar permanentemente del mapa y la lista" style="flex-shrink:0;border:none;background:transparent;color:var(--text-mute);cursor:pointer;font-size:14px;line-height:1;padding:2px 4px;border-radius:4px;" onmouseover="this.style.background=\'#FEE2E2\';this.style.color=\'#DC2626\';" onmouseout="this.style.background=\'transparent\';this.style.color=\'var(--text-mute)\';">✕</button>'
+        + '</label>';
     }).join('') + (items.length > MAX ? '<div style="padding:8px 12px;font-size:10.5px;color:var(--text-mute);text-align:center;">Mostrando ' + MAX + ' de ' + items.length + '. Acota con los filtros o el buscador.</div>' : '');
   }
   // Wire de los checkboxes recién pintados
@@ -30043,6 +30073,23 @@ function _comboPintarListaProyectos() {
       _comboActualizarSelInfo();
       // Al marcar, acercar el mapa al/los punto(s) seleccionado(s)
       if (cb.checked) _comboEncuadrarSeleccion(id);
+    };
+  });
+  // Wire de los botones de eliminar permanentemente
+  wrap.querySelectorAll('.combo-lista-del').forEach(btn => {
+    btn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const delKey = btn.dataset.delkey;
+      const nombre = btn.dataset.nombre || 'este elemento';
+      if (!confirm('¿Eliminar "' + nombre + '" de forma permanente?\n\nNo volverá a aparecer en el mapa ni en la lista.')) return;
+      comboEliminados.add(delKey);
+      guardarComboEliminados();
+      // Repinta mapa + lista para reflejar la eliminación
+      _comboPintarSeia();
+      _comboPintarMineras();
+      _comboActualizarContadores();
+      _comboPintarListaProyectos();
     };
   });
   _comboActualizarSelInfo();
