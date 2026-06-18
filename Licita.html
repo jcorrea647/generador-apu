@@ -29648,6 +29648,7 @@ function abrirVistaCombo() {
     await cargarProyectosSeia();
     await cargarFlagMinerasVisible();
     await cargarComboEliminados();
+    comboListaTexto = '';
     renderCombo();
   })();
 }
@@ -30035,6 +30036,9 @@ function _comboPintarListaProyectos() {
   if (!wrap) return;
   let items = _comboListaItems();
   const total = items.length;
+  // Lee el filtro directamente del input (evita desincronización con la variable global)
+  const inp = $('comboListaBuscar');
+  if (inp) comboListaTexto = inp.value;
   const ft = _seiaNorm(comboListaTexto || '');
   if (ft) items = items.filter(it => _seiaNorm(it.nombre).includes(ft) || _seiaNorm(it.sub).includes(ft));
   const cnt = $('comboListaCount'); if (cnt) cnt.textContent = '(' + items.length + (items.length !== total ? ' de ' + total : '') + ')';
