@@ -29794,7 +29794,7 @@ function renderCombo() {
           </div>
           <div style="display:flex;align-items:center;justify-content:space-between;margin-top:7px;">
             <span id="comboListaSelInfo" style="font-size:10.5px;color:var(--text-mute);"></span>
-            <button id="comboListaLimpiarSel" style="font-size:10.5px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:2px 0;display:none;">Quitar resaltado</button>
+            <button id="comboListaLimpiarSel" style="font-size:10.5px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:2px 0;display:none;">Mostrar todo</button>
           </div>
         </div>
         <div id="comboListaWrap" style="overflow-y:auto;flex:1;"></div>
@@ -29880,8 +29880,11 @@ function _comboPintarSeia() {
     : L.layerGroup();
   // Limpia referencias SEIA previas
   Object.keys(_comboMarcadores).forEach(k => { if (k.indexOf('seia:') === 0) delete _comboMarcadores[k]; });
+  const haySel = comboSeleccion.size > 0;
   _comboSeiaFiltrados().forEach((p, idx) => {
     const id = 'seia:' + (p.id || idx);
+    // Si hay selección activa, solo se muestran los seleccionados
+    if (haySel && !comboSeleccion.has(id)) return;
     const color = _seiaColorEstado(p.estado);
     const seleccionado = comboSeleccion.has(id);
     const marker = L.circleMarker([p.lat, p.lon], {
@@ -29925,6 +29928,7 @@ function _comboPintarMineras() {
     : L.layerGroup();
   // Filtrado con índice original para id estable
   const txt = _seiaNorm(comboMinerasTexto || '');
+  const haySelMin = comboSeleccion.size > 0;
   MINERAS_CL.forEach((f, idx) => {
     if (!_comboRegionMatch(f.g)) return;
     if (!comboMinerasCats.has(f.c || 'S/C')) return;
@@ -29934,6 +29938,8 @@ function _comboPintarMineras() {
     }
     if (f.a == null || f.o == null) return;
     const id = 'min:' + idx;
+    // Si hay selección activa, solo se muestran los seleccionados
+    if (haySelMin && !comboSeleccion.has(id)) return;
     const seleccionado = comboSeleccion.has(id);
     const colorBase = f.m ? '#B45309' : '#57534E';
     const icon = L.divIcon({
@@ -30030,9 +30036,12 @@ function _comboPintarListaProyectos() {
       if (cb.checked) comboSeleccion.add(id); else comboSeleccion.delete(id);
       const lab = cb.closest('.combo-lista-item');
       if (lab) lab.style.background = cb.checked ? 'var(--accent-lightest)' : 'transparent';
-      _comboAplicarResaltado(id);
+      // La selección actúa como filtro final: repintar el mapa para dejar SOLO lo seleccionado
+      // (o todo lo filtrado si no queda nada seleccionado).
+      _comboPintarSeia();
+      _comboPintarMineras();
       _comboActualizarSelInfo();
-      // Al marcar, acercar el mapa al/los punto(s) resaltado(s)
+      // Al marcar, acercar el mapa al/los punto(s) seleccionado(s)
       if (cb.checked) _comboEncuadrarSeleccion(id);
     };
   });
@@ -30106,7 +30115,7 @@ function _comboActualizarSelInfo() {
   const info = $('comboListaSelInfo');
   const btn = $('comboListaLimpiarSel');
   const n = comboSeleccion.size;
-  if (info) info.textContent = n ? (n + ' resaltado' + (n > 1 ? 's' : '')) : '';
+  if (info) info.textContent = n ? ('Mostrando solo ' + n + ' en el mapa') : '';
   if (btn) btn.style.display = n ? 'inline' : 'none';
 }
 
@@ -30140,13 +30149,15 @@ function _comboWire(cont) {
   // Buscador interno de la lista
   const listaBuscar = cont.querySelector('#comboListaBuscar');
   if (listaBuscar) listaBuscar.oninput = () => { comboListaTexto = listaBuscar.value; _comboPintarListaProyectos(); };
-  // Quitar todo el resaltado
+  // "Mostrar todo": limpia la selección y vuelve a mostrar todo lo filtrado
   const limpiarSel = cont.querySelector('#comboListaLimpiarSel');
   if (limpiarSel) limpiarSel.onclick = () => {
-    const ids = Array.from(comboSeleccion);
     comboSeleccion = new Set();
-    ids.forEach(id => _comboAplicarResaltado(id));
-    _comboPintarListaProyectos();
+    cont.querySelectorAll('.combo-lista-cb').forEach(cb => { cb.checked = false; });
+    cont.querySelectorAll('.combo-lista-item').forEach(it => { it.style.background = 'transparent'; });
+    _comboPintarSeia();
+    _comboPintarMineras();
+    _comboActualizarSelInfo();
   };
 
   // Toggle capa SEIA (atenúa su panel de filtros cuando está apagada)
