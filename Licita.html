@@ -29630,14 +29630,18 @@ function renderCombo() {
   const todasCats = comboMinerasCats.size === MINERAS_CATEGORIAS_TODAS.length;
   const hayFiltroMin = !todasCats || (comboMinerasTexto && comboMinerasTexto.trim());
 
-  // Chips de región (filtro aplica a ambas capas)
-  const chips = COMBO_REGIONES.map(([k, label]) => {
+  // Ítems de región para el desplegable (filtro aplica a ambas capas)
+  const regItems = COMBO_REGIONES.map(([k, label]) => {
     const activo = comboRegionesActivas.has(k);
-    return `<label class="combo-reg-chk" data-reg="${escapeHtml(k)}" style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid ${activo?'var(--accent)':'var(--border)'};border-radius:20px;cursor:pointer;font-size:12px;background:${activo?'var(--accent-lightest)':'var(--surface)'};color:var(--text);user-select:none;">
-      <input type="checkbox" class="combo-reg-cb" data-reg="${escapeHtml(k)}" ${activo?'checked':''} style="width:13px;height:13px;cursor:pointer;accent-color:var(--accent);">
+    return `<label class="combo-reg-item" data-reg="${escapeHtml(k)}" style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:6px;cursor:pointer;font-size:12.5px;color:var(--text);" onmouseover="this.style.background='var(--surface-warm)'" onmouseout="this.style.background='transparent'">
+      <input type="checkbox" class="combo-reg-cb" data-reg="${escapeHtml(k)}" ${activo?'checked':''} style="width:14px;height:14px;cursor:pointer;accent-color:var(--accent);flex-shrink:0;">
       <span>${escapeHtml(label)}</span>
     </label>`;
   }).join('');
+  const nReg = comboRegionesActivas.size;
+  const regBtnLabel = nReg === 0 ? 'Todas las regiones' : (nReg === 1
+    ? (COMBO_REGIONES.find(([k])=>comboRegionesActivas.has(k))||[null,'1 región'])[1]
+    : `${nReg} regiones seleccionadas`);
 
   // Multiselect SEIA (tamaño/sector/estado) apilados en el sidebar
   const mkSelect = (campo, titulo, accent) => {
@@ -29693,8 +29697,16 @@ function renderCombo() {
         <div style="margin-bottom:16px;border-top:1px solid var(--border-soft);padding-top:14px;">
           <div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:10px;">2</span> Región</div>
           <div style="font-size:11px;color:var(--text-mute);margin-bottom:8px;">Aplica a ambas capas. Sin marcar = todas.</div>
-          <div style="display:flex;flex-direction:column;gap:4px;">${chips}</div>
-          <button id="comboRegTodas" style="margin-top:8px;font-size:11.5px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:2px 0;">↺ Todas las regiones</button>
+          <div style="position:relative;">
+            <button id="comboRegBtn" style="width:100%;text-align:left;padding:8px 10px;border:1px solid ${nReg?'var(--accent)':'var(--border)'};border-radius:8px;font-family:inherit;font-size:12.5px;background:${nReg?'var(--accent-lightest)':'var(--surface)'};color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:6px;">
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(regBtnLabel)}</span>
+              <span id="comboRegCaret" style="opacity:0.6;">▼</span>
+            </button>
+            <div id="comboRegPanel" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:var(--surface);border:1px solid var(--border);border-radius:9px;box-shadow:0 12px 36px rgba(0,0,0,0.18);z-index:1200;max-height:260px;overflow-y:auto;padding:6px;">
+              <div id="comboRegTodas" style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;color:var(--accent-dark);border-bottom:1px solid var(--border-soft);margin-bottom:4px;">↺ Ver todas (limpiar)</div>
+              ${regItems}
+            </div>
+          </div>
         </div>
 
         <!-- Paso 3: filtros SEIA -->
@@ -29725,12 +29737,15 @@ function renderCombo() {
 
       </aside>
 
+      <!-- ===== PESTAÑA PARA PLEGAR EL SIDEBAR ===== -->
+      <button id="comboSidebarTab" title="Ocultar filtros" style="flex-shrink:0;align-self:center;width:22px;height:64px;border:1px solid var(--border);border-left:none;border-radius:0 8px 8px 0;background:var(--surface-warm);color:var(--accent);cursor:pointer;font-size:15px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0;margin-left:-14px;"><span>‹</span></button>
+
       <!-- ===== MAPA ===== -->
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;">
         <div id="comboMap" style="width:100%;height:640px;border:1px solid var(--border);border-radius:12px;overflow:hidden;"></div>
         <div style="font-size:11px;color:var(--text-mute);margin-top:6px;">
           🟢 SEIA: color por estado (verde aprobado · ámbar en calificación · rojo rechazado).
-          🔶 Mineras: 🟤 metálico / ⚪ industrial. Mapa físico por defecto (cambia la capa base arriba a la derecha del mapa).
+          🔶 Mineras: 🟤 metálico / ⚪ industrial. Mapa satelital con nombres por defecto (cambia la capa base arriba a la derecha del mapa).
         </div>
       </div>
     </div>
@@ -29746,7 +29761,7 @@ function _comboPintarMapa() {
   if (!div || typeof L === 'undefined') return;
   if (_comboMap) { try { _comboMap.remove(); } catch(e){} _comboMap = null; }
   _comboMap = L.map(div, { scrollWheelZoom: true }).setView([-31.5, -70.8], 4);
-  // Capas base con selector; arranca en RELIEVE (físico) por defecto.
+  // Capas base con selector; arranca en SATÉLITE + etiquetas de ciudades por defecto.
   const maxZoom = 19;
   const capaRelieve = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Physical_Map/MapServer/tile/{z}/{y}/{x}', {
     attribution: '© Esri, USGS, NOAA', maxZoom: 8,
@@ -29760,13 +29775,28 @@ function _comboPintarMapa() {
   const capaSatelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
     attribution: '© Esri, Maxar, Earthstar Geographics', maxZoom: maxZoom,
   });
-  capaRelieve.addTo(_comboMap); // ← físico por defecto
+  // Etiquetas (nombres de ciudades, pueblos, calles) para superponer sobre el satélite
+  const capaEtiquetas = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', {
+    attribution: '© CARTO', subdomains: 'abcd', maxZoom: maxZoom, pane: 'overlayPane',
+  });
+  capaSatelite.addTo(_comboMap);   // ← satélite por defecto
+  capaEtiquetas.addTo(_comboMap);   // ← con nombres de ciudades/poblados encima
   L.control.layers({
+    '🛰️ Satélite': capaSatelite,
     '⛰️ Relieve (físico)': capaRelieve,
     '🏔️ Terreno (topo)': capaTerreno,
     '🗺️ Mapa': capaNormal,
-    '🛰️ Satélite': capaSatelite,
-  }, {}, { position: 'topright', collapsed: true }).addTo(_comboMap);
+  }, {
+    'Nombres (ciudades/calles)': capaEtiquetas,
+  }, { position: 'topright', collapsed: true }).addTo(_comboMap);
+  // Mostrar etiquetas automáticamente sobre el satélite; ocultarlas en mapas que ya las traen
+  _comboMap.on('baselayerchange', (e) => {
+    if (e.name && e.name.indexOf('Satélite') >= 0) {
+      if (!_comboMap.hasLayer(capaEtiquetas)) capaEtiquetas.addTo(_comboMap);
+    } else {
+      if (_comboMap.hasLayer(capaEtiquetas)) _comboMap.removeLayer(capaEtiquetas);
+    }
+  });
   _comboSeiaLayer = null;
   _comboMinerasLayer = null;
   _comboPintarSeia();
@@ -29831,15 +29861,20 @@ function _comboActualizarContadores() {
 
 function _comboWire(cont) {
   const refrescarTodo = () => { _comboPintarSeia(); _comboPintarMineras(); _comboActualizarContadores(); };
-  // Botón plegar/desplegar el sidebar de filtros
-  const sbToggle = cont.querySelector('#comboSidebarToggle');
+  // Plegar/desplegar el sidebar (botón superior + pestaña lateral pegada al mapa)
   const sidebar = cont.querySelector('#comboSidebar');
-  if (sbToggle && sidebar) sbToggle.onclick = () => {
-    const oculto = sidebar.style.display === 'none';
-    sidebar.style.display = oculto ? 'block' : 'none';
-    sbToggle.style.background = oculto ? 'var(--surface)' : 'var(--accent-lightest)';
+  const sbToggle = cont.querySelector('#comboSidebarToggle');
+  const sbTab = cont.querySelector('#comboSidebarTab');
+  const setSidebar = (mostrar) => {
+    if (!sidebar) return;
+    sidebar.style.display = mostrar ? 'block' : 'none';
+    if (sbTab) sbTab.querySelector('span').textContent = mostrar ? '‹' : '›';
+    if (sbTab) sbTab.title = mostrar ? 'Ocultar filtros' : 'Mostrar filtros';
+    if (sbToggle) sbToggle.style.background = mostrar ? 'var(--surface)' : 'var(--accent-lightest)';
     setTimeout(() => { if (_comboMap) _comboMap.invalidateSize(); }, 60);
   };
+  if (sbToggle && sidebar) sbToggle.onclick = () => setSidebar(sidebar.style.display === 'none');
+  if (sbTab && sidebar) sbTab.onclick = () => setSidebar(sidebar.style.display === 'none');
   // Toggle capa SEIA (atenúa su panel de filtros cuando está apagada)
   const tSeia = cont.querySelector('#comboToggleSeia');
   const seiaBox = cont.querySelector('#comboSeiaFiltrosBox');
@@ -29857,21 +29892,46 @@ function _comboWire(cont) {
     _comboPintarMineras();
   };
 
-  // Chips de región (aplican a ambas capas en vivo)
+  // --- Región (desplegable multi-select) ---
+  const regBtn = cont.querySelector('#comboRegBtn');
+  const regPanel = cont.querySelector('#comboRegPanel');
+  const regCaret = cont.querySelector('#comboRegCaret');
+  const cerrarRegPanel = () => { if (regPanel) regPanel.style.display = 'none'; if (regCaret) regCaret.textContent = '▼'; };
+  if (regBtn && regPanel) regBtn.onclick = (e) => {
+    e.stopPropagation();
+    const abierto = regPanel.style.display === 'block';
+    regPanel.style.display = abierto ? 'none' : 'block';
+    if (regCaret) regCaret.textContent = abierto ? '▼' : '▲';
+  };
+  // Evita que clicks dentro del panel lo cierren
+  if (regPanel) regPanel.onclick = (e) => e.stopPropagation();
+  // Actualiza el texto del botón según la selección (sin re-render completo)
+  const actualizarRegLabel = () => {
+    if (!regBtn) return;
+    const n = comboRegionesActivas.size;
+    const lbl = n === 0 ? 'Todas las regiones' : (n === 1
+      ? (COMBO_REGIONES.find(([k])=>comboRegionesActivas.has(k))||[null,'1 región'])[1]
+      : `${n} regiones seleccionadas`);
+    regBtn.querySelector('span').textContent = lbl;
+    regBtn.style.borderColor = n ? 'var(--accent)' : 'var(--border)';
+    regBtn.style.background = n ? 'var(--accent-lightest)' : 'var(--surface)';
+  };
   cont.querySelectorAll('.combo-reg-cb').forEach(cb => {
     cb.onchange = () => {
       const reg = cb.dataset.reg;
       if (cb.checked) comboRegionesActivas.add(reg); else comboRegionesActivas.delete(reg);
-      const chip = cb.closest('.combo-reg-chk');
-      if (chip) {
-        chip.style.borderColor = cb.checked ? 'var(--accent)' : 'var(--border)';
-        chip.style.background = cb.checked ? 'var(--accent-lightest)' : 'var(--surface)';
-      }
+      actualizarRegLabel();
       refrescarTodo();
     };
   });
   const btnTodas = cont.querySelector('#comboRegTodas');
-  if (btnTodas) btnTodas.onclick = (e) => { e.preventDefault(); comboRegionesActivas = new Set(); renderCombo(); };
+  if (btnTodas) btnTodas.onclick = (e) => {
+    e.stopPropagation();
+    comboRegionesActivas = new Set();
+    cont.querySelectorAll('.combo-reg-cb').forEach(cb => { cb.checked = false; });
+    actualizarRegLabel();
+    refrescarTodo();
+  };
 
   // --- Filtros SEIA ---
   const seiaBuscar = cont.querySelector('#comboSeiaBuscar');
