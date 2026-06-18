@@ -29540,6 +29540,34 @@ let comboRegionesActivas = new Set(); // vacío = todas las regiones
 let comboSeiaFiltros = { tamano: new Set(), sector: new Set(), estado: new Set(), texto: '' };
 let comboMinerasCats = new Set(MINERAS_CATEGORIAS_TODAS); // todas por defecto
 let comboMinerasTexto = '';
+// País(es) activos para la capa Mineras. Por defecto solo Chile. Multi-select.
+let comboMinerasPaises = new Set(['CL']);
+
+// Convierte una mina de Perú (MINAS_PE) al formato compacto de MINERAS_CL,
+// para integrarla en la misma capa. Marca _pais:'PE' y _peRef al original.
+function _minaPEaFaena(mp) {
+  return {
+    e: mp.nombre || '',                 // empresa/faena
+    n: [mp.provincia, mp.mineral].filter(Boolean).join(' · '),
+    t: 'Mina',
+    r: mp.mineral || '',
+    m: 1,                               // metálica
+    c: 'S/C',
+    g: mp.region || '',
+    k: mp.provincia || '',
+    a: mp.lat, o: mp.lon,
+    _pais: 'PE', _peRef: mp,
+  };
+}
+// Minas de Perú normalizadas al formato Mineras, generadas UNA vez (identidad estable).
+const MINAS_PE_FAENAS = MINAS_PE.map(_minaPEaFaena);
+// Dataset de mineras según países activos: Chile y/o Perú.
+function _comboMinerasDataset() {
+  let arr = [];
+  if (comboMinerasPaises.has('CL')) arr = arr.concat(MINERAS_CL);
+  if (comboMinerasPaises.has('PE')) arr = arr.concat(MINAS_PE_FAENAS);
+  return arr;
+}
 // Lista de proyectos visibles: selección resaltada (Set de ids "seia:.." / "min:..")
 // y referencias id→marcador para poder resaltarlos en el mapa.
 let comboSeleccion = new Set();
@@ -29570,24 +29598,40 @@ async function guardarComboEliminados() {
   try { await dbPut({ id: COMBO_ELIMINADOS_DB_KEY, value: Array.from(comboEliminados) }); } catch (e) {}
 }
 
-// Regiones de Chile ordenadas norte→sur. Clave normalizada (vía _seiaNorm) + etiqueta.
+// Regiones de Chile ordenadas norte→sur. [claveNorm, etiqueta, país]
 const COMBO_REGIONES = [
-  ['arica y parinacota', 'Arica y Parinacota'],
-  ['tarapaca', 'Tarapacá'],
-  ['antofagasta', 'Antofagasta'],
-  ['atacama', 'Atacama'],
-  ['coquimbo', 'Coquimbo'],
-  ['valparaiso', 'Valparaíso'],
-  ['metropolitana', 'Metropolitana'],
-  ["o'higgins", "O'Higgins"],
-  ['maule', 'Maule'],
-  ['nuble', 'Ñuble'],
-  ['biobio', 'Biobío'],
-  ['araucania', 'Araucanía'],
-  ['los rios', 'Los Ríos'],
-  ['los lagos', 'Los Lagos'],
-  ['aysen', 'Aysén'],
-  ['magallanes', 'Magallanes'],
+  ['arica y parinacota', 'Arica y Parinacota', 'CL'],
+  ['tarapaca', 'Tarapacá', 'CL'],
+  ['antofagasta', 'Antofagasta', 'CL'],
+  ['atacama', 'Atacama', 'CL'],
+  ['coquimbo', 'Coquimbo', 'CL'],
+  ['valparaiso', 'Valparaíso', 'CL'],
+  ['metropolitana', 'Metropolitana', 'CL'],
+  ["o'higgins", "O'Higgins", 'CL'],
+  ['maule', 'Maule', 'CL'],
+  ['nuble', 'Ñuble', 'CL'],
+  ['biobio', 'Biobío', 'CL'],
+  ['araucania', 'Araucanía', 'CL'],
+  ['los rios', 'Los Ríos', 'CL'],
+  ['los lagos', 'Los Lagos', 'CL'],
+  ['aysen', 'Aysén', 'CL'],
+  ['magallanes', 'Magallanes', 'CL'],
+];
+// Regiones de Perú presentes en MINAS_PE (norte→sur aprox). [claveNorm, etiqueta, país]
+const COMBO_REGIONES_PE = [
+  ['cajamarca', 'Cajamarca', 'PE'],
+  ['la libertad', 'La Libertad', 'PE'],
+  ['ancash', 'Áncash', 'PE'],
+  ['lima / huanuco', 'Lima / Huánuco', 'PE'],
+  ['junin', 'Junín', 'PE'],
+  ['ica', 'Ica', 'PE'],
+  ['ayacucho', 'Ayacucho', 'PE'],
+  ['apurimac', 'Apurímac', 'PE'],
+  ['cusco', 'Cusco', 'PE'],
+  ['arequipa', 'Arequipa', 'PE'],
+  ['puno', 'Puno', 'PE'],
+  ['moquegua', 'Moquegua', 'PE'],
+  ['tacna', 'Tacna', 'PE'],
 ];
 
 // ¿La región (string libre) pasa el filtro? Set vacío = todas.
@@ -29610,6 +29654,18 @@ function _comboNormRegion(regionStr) {
   if (r.includes('atacama')) return 'atacama';
   if (r.includes('antofagasta')) return 'antofagasta';
   if (r.includes('maule')) return 'maule';
+  // Perú
+  if (r.includes('huanuco') || r.includes('lima')) return 'lima / huanuco';
+  if (r.includes('ancash')) return 'ancash';
+  if (r.includes('apurimac')) return 'apurimac';
+  if (r.includes('moquegua')) return 'moquegua';
+  if (r.includes('tacna')) return 'tacna';
+  if (r.includes('cusco') || r.includes('cuzco')) return 'cusco';
+  if (r.includes('junin')) return 'junin';
+  if (r.includes('ayacucho')) return 'ayacucho';
+  if (r.includes('cajamarca')) return 'cajamarca';
+  if (r.includes('la libertad')) return 'la libertad';
+  if (r.includes('puno')) return 'puno';
   return r;
 }
 function _comboRegionMatch(regionStr) {
@@ -29630,13 +29686,14 @@ function _comboSeiaFiltrados() {
     return true;
   });
 }
-// Faenas mineras: región + categoría + texto (empresa o faena).
+// Faenas mineras (Chile + Perú según país): región + categoría + texto.
 function _comboMinerasFiltrados() {
   const txt = _seiaNorm(comboMinerasTexto || '');
-  return MINERAS_CL.filter(f => {
+  return _comboMinerasDataset().filter(f => {
     if (comboEliminados.has(_comboMinKey(f))) return false;
     if (!_comboRegionMatch(f.g)) return false;
-    if (!comboMinerasCats.has(f.c || 'S/C')) return false;
+    // El filtro de categoría aplica solo a Chile (Perú no tiene categoría)
+    if (f._pais !== 'PE' && !comboMinerasCats.has(f.c || 'S/C')) return false;
     if (txt) {
       const emp = _seiaNorm(f.e || ''), fae = _seiaNorm(f.n || '');
       if (!emp.includes(txt) && !fae.includes(txt)) return false;
@@ -29694,18 +29751,46 @@ function renderCombo() {
   const todasCats = comboMinerasCats.size === MINERAS_CATEGORIAS_TODAS.length;
   const hayFiltroMin = !todasCats || (comboMinerasTexto && comboMinerasTexto.trim());
 
-  // Ítems de región para el desplegable (filtro aplica a ambas capas)
-  const regItems = COMBO_REGIONES.map(([k, label]) => {
+  // Ítems de región para el desplegable. Muestra regiones de Chile siempre (afectan
+  // SEIA + Mineras CL) y, si Perú está activo, agrega las regiones peruanas (solo Mineras).
+  const _regItemHtml = ([k, label]) => {
     const activo = comboRegionesActivas.has(k);
     return `<label class="combo-reg-item" data-reg="${escapeHtml(k)}" style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:6px;cursor:pointer;font-size:12.5px;color:var(--text);" onmouseover="this.style.background='var(--surface-warm)'" onmouseout="this.style.background='transparent'">
       <input type="checkbox" class="combo-reg-cb" data-reg="${escapeHtml(k)}" ${activo?'checked':''} style="width:14px;height:14px;cursor:pointer;accent-color:var(--accent);flex-shrink:0;">
       <span>${escapeHtml(label)}</span>
     </label>`;
-  }).join('');
+  };
+  const _subhdr = (t) => `<div style="padding:6px 9px 3px;font-size:10px;font-weight:700;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.04em;">${t}</div>`;
+  let regItems = '';
+  if (comboMinerasPaises.has('PE')) regItems += _subhdr('🇨🇱 Chile');
+  regItems += COMBO_REGIONES.map(_regItemHtml).join('');
+  if (comboMinerasPaises.has('PE')) {
+    regItems += _subhdr('🇵🇪 Perú');
+    regItems += COMBO_REGIONES_PE.map(_regItemHtml).join('');
+  }
+  // Mapa clave→etiqueta para mostrar el nombre cuando hay una sola región elegida.
+  const _regLabelDe = (clave) => {
+    const todo = COMBO_REGIONES.concat(COMBO_REGIONES_PE);
+    const hit = todo.find(([k]) => k === clave);
+    return hit ? hit[1] : '1 región';
+  };
   const nReg = comboRegionesActivas.size;
   const regBtnLabel = nReg === 0 ? 'Todas las regiones' : (nReg === 1
-    ? (COMBO_REGIONES.find(([k])=>comboRegionesActivas.has(k))||[null,'1 región'])[1]
+    ? _regLabelDe(Array.from(comboRegionesActivas)[0])
     : `${nReg} regiones seleccionadas`);
+
+  // Desplegable de País (multi-select) para la capa Mineras. Por defecto solo Chile.
+  const _paises = [['CL', '🇨🇱 Chile'], ['PE', '🇵🇪 Perú']];
+  const paisItems = _paises.map(([k, label]) => {
+    const activo = comboMinerasPaises.has(k);
+    return `<label class="combo-pais-item" data-pais="${k}" style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:6px;cursor:pointer;font-size:12.5px;color:var(--text);" onmouseover="this.style.background='var(--surface-warm)'" onmouseout="this.style.background='transparent'">
+      <input type="checkbox" class="combo-pais-cb" data-pais="${k}" ${activo?'checked':''} style="width:14px;height:14px;cursor:pointer;accent-color:#B45309;flex-shrink:0;">
+      <span>${escapeHtml(label)}</span>
+    </label>`;
+  }).join('');
+  const nPais = comboMinerasPaises.size;
+  const paisBtnLabel = nPais === 0 ? 'Ningún país' : (nPais === _paises.length ? 'Chile y Perú'
+    : _paises.filter(([k])=>comboMinerasPaises.has(k)).map(([,l])=>l.replace(/^[^ ]+ /,'')).join(', '));
 
   // Multiselect SEIA (tamaño/sector/estado) apilados en el sidebar
   const mkSelect = (campo, titulo, accent) => {
@@ -29805,6 +29890,16 @@ function renderCombo() {
         <!-- Paso 4: filtros Mineras -->
         <div id="comboMinFiltrosBox" style="border-top:1px solid var(--border-soft);padding-top:14px;${comboCapaMineras?'':'opacity:0.45;'}">
           <div style="font-size:11px;font-weight:700;color:#B45309;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px;display:flex;align-items:center;gap:6px;"><span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#B45309;color:#fff;font-size:10px;">4</span> Filtros Mineras</div>
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">País</label>
+          <div style="position:relative;margin-bottom:9px;">
+            <button id="comboPaisBtn" style="width:100%;text-align:left;padding:7px 9px;border:1px solid #B45309;border-radius:7px;font-family:inherit;font-size:12px;background:var(--accent-lightest);color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:6px;">
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(paisBtnLabel)}</span>
+              <span id="comboPaisCaret" style="opacity:0.6;">▼</span>
+            </button>
+            <div id="comboPaisPanel" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:var(--surface);border:1px solid var(--border);border-radius:9px;box-shadow:0 12px 36px rgba(0,0,0,0.18);z-index:1200;padding:6px;">
+              ${paisItems}
+            </div>
+          </div>
           <div style="position:relative;margin-bottom:9px;">
             <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);opacity:0.5;font-size:12px;pointer-events:none;">🔍</span>
             <input type="text" id="comboMinBuscar" placeholder="Buscar por empresa o faena…" value="${escapeHtml(comboMinerasTexto||'')}" style="width:100%;box-sizing:border-box;padding:7px 9px 7px 28px;border:1px solid ${comboMinerasTexto?'#B45309':'var(--border)'};border-radius:7px;font-family:inherit;font-size:12px;background:var(--surface);color:var(--text);" />
@@ -29980,19 +30075,19 @@ function _comboPintarMineras() {
         },
       })
     : L.layerGroup();
-  // Filtrado con índice original para id estable
+  // Filtrado sobre dataset unificado (Chile + Perú según país); id estable por contenido.
   const txt = _seiaNorm(comboMinerasTexto || '');
   const haySelMin = comboSeleccion.size > 0;
-  MINERAS_CL.forEach((f, idx) => {
+  _comboMinerasDataset().forEach((f) => {
     if (comboEliminados.has(_comboMinKey(f))) return;
     if (!_comboRegionMatch(f.g)) return;
-    if (!comboMinerasCats.has(f.c || 'S/C')) return;
+    if (f._pais !== 'PE' && !comboMinerasCats.has(f.c || 'S/C')) return;
     if (txt) {
       const emp = _seiaNorm(f.e || ''), fae = _seiaNorm(f.n || '');
       if (!emp.includes(txt) && !fae.includes(txt)) return;
     }
     if (f.a == null || f.o == null) return;
-    const id = 'min:' + idx;
+    const id = 'min:' + _comboMinKey(f);
     // Si hay selección activa, solo se muestran los seleccionados
     if (haySelMin && !comboSeleccion.has(id)) return;
     const seleccionado = comboSeleccion.has(id);
@@ -30002,14 +30097,24 @@ function _comboPintarMineras() {
       iconSize: seleccionado ? [22, 22] : [16, 16],
     });
     const marker = L.marker([f.a, f.o], { icon });
+    const esPE = f._pais === 'PE';
     let popup = '<div style="font-weight:700;font-size:13px;margin-bottom:4px;">' + escapeHtml(f.e || '—') + '</div>';
-    popup += '<div style="font-size:11px;color:#B45309;font-weight:600;margin-bottom:3px;">⛏️ Faena minera</div>';
-    if (f.n) popup += '<div style="font-size:11.5px;"><b>Faena:</b> ' + escapeHtml(f.n) + '</div>';
-    const tr = [f.t, f.r].filter(Boolean).join(' · ');
-    if (tr) popup += '<div style="font-size:11.5px;"><b>Tipo/Recurso:</b> ' + escapeHtml(tr) + '</div>';
-    if (f.c) popup += '<div style="font-size:11.5px;"><b>Categoría:</b> ' + escapeHtml(f.c) + '</div>';
-    const ubic = [f.k, f.g].filter(Boolean).join(', ');
-    if (ubic) popup += '<div style="font-size:11.5px;"><b>Ubicación:</b> ' + escapeHtml(ubic) + '</div>';
+    popup += '<div style="font-size:11px;color:#B45309;font-weight:600;margin-bottom:3px;">' + (esPE ? '⛏️ Mina (Perú) 🇵🇪' : '⛏️ Faena minera') + '</div>';
+    if (esPE && f._peRef) {
+      const mp = f._peRef;
+      if (mp.propietarios) popup += '<div style="font-size:11.5px;"><b>Propietarios:</b> ' + escapeHtml(mp.propietarios) + '</div>';
+      if (mp.produccion) popup += '<div style="font-size:11.5px;"><b>Producción:</b> ' + escapeHtml(mp.produccion) + '</div>';
+      if (mp.mineral) popup += '<div style="font-size:11.5px;"><b>Mineral:</b> ' + escapeHtml(mp.mineral) + '</div>';
+      const ubicPE = [mp.provincia, mp.region].filter(Boolean).join(', ');
+      if (ubicPE) popup += '<div style="font-size:11.5px;"><b>Ubicación:</b> ' + escapeHtml(ubicPE) + '</div>';
+    } else {
+      if (f.n) popup += '<div style="font-size:11.5px;"><b>Faena:</b> ' + escapeHtml(f.n) + '</div>';
+      const tr = [f.t, f.r].filter(Boolean).join(' · ');
+      if (tr) popup += '<div style="font-size:11.5px;"><b>Tipo/Recurso:</b> ' + escapeHtml(tr) + '</div>';
+      if (f.c) popup += '<div style="font-size:11.5px;"><b>Categoría:</b> ' + escapeHtml(f.c) + '</div>';
+      const ubic = [f.k, f.g].filter(Boolean).join(', ');
+      if (ubic) popup += '<div style="font-size:11.5px;"><b>Ubicación:</b> ' + escapeHtml(ubic) + '</div>';
+    }
     marker.bindPopup(popup, { maxWidth: 280 });
     marker.addTo(grupo);
     _comboMarcadores[id] = { marker, tipo: 'min', color: colorBase, nombre: f.e || '', lat: f.a, lon: f.o };
@@ -30118,17 +30223,17 @@ function _comboListaItems() {
   }
   if (comboCapaMineras) {
     const txt = _seiaNorm(comboMinerasTexto || '');
-    MINERAS_CL.forEach((f, idx) => {
+    _comboMinerasDataset().forEach((f) => {
       if (comboEliminados.has(_comboMinKey(f))) return;
       if (!_comboRegionMatch(f.g)) return;
-      if (!comboMinerasCats.has(f.c || 'S/C')) return;
+      if (f._pais !== 'PE' && !comboMinerasCats.has(f.c || 'S/C')) return;
       if (txt) { const emp=_seiaNorm(f.e||''), fae=_seiaNorm(f.n||''); if (!emp.includes(txt)&&!fae.includes(txt)) return; }
       if (f.a == null || f.o == null) return;
       if (!dentro(f.a, f.o)) return;
       items.push({
-        id: 'min:' + idx, tipo: 'min',
+        id: 'min:' + _comboMinKey(f), tipo: 'min',
         nombre: f.e || '(sin empresa)',
-        sub: [f.n, f.k].filter(Boolean).join(' · '),
+        sub: [f.n, f.k].filter(Boolean).join(' · ') + (f._pais === 'PE' ? ' · 🇵🇪' : ''),
         color: f.m ? '#B45309' : '#57534E',
         delKey: _comboMinKey(f),
       });
@@ -30342,6 +30447,8 @@ function _comboWire(cont) {
   const cerrarTodosLosPaneles = () => {
     const rp = cont.querySelector('#comboRegPanel');
     if (rp) { rp.style.display = 'none'; const c = cont.querySelector('#comboRegCaret'); if (c) c.textContent = '▼'; }
+    const pp = cont.querySelector('#comboPaisPanel');
+    if (pp) { pp.style.display = 'none'; const pc = cont.querySelector('#comboPaisCaret'); if (pc) pc.textContent = '▼'; }
     cont.querySelectorAll('.combo-seia-panel').forEach(p => {
       p.style.display = 'none';
       const btn = p.parentElement && p.parentElement.querySelector('.combo-seia-caret');
@@ -30461,6 +30568,8 @@ function _comboWire(cont) {
       if (!c) return;
       const rp = c.querySelector('#comboRegPanel');
       if (rp) { rp.style.display = 'none'; const ca = c.querySelector('#comboRegCaret'); if (ca) ca.textContent = '▼'; }
+      const pp = c.querySelector('#comboPaisPanel');
+      if (pp) { pp.style.display = 'none'; const pca = c.querySelector('#comboPaisCaret'); if (pca) pca.textContent = '▼'; }
       c.querySelectorAll('.combo-seia-panel').forEach(p => {
         p.style.display = 'none';
         const cr = p.parentElement && p.parentElement.querySelector('.combo-seia-caret');
@@ -30471,8 +30580,31 @@ function _comboWire(cont) {
   }
 
   // --- Filtros Mineras ---
+  // Desplegable de País (multi-select): cambia el dataset de Mineras y las regiones disponibles.
+  const paisBtn = cont.querySelector('#comboPaisBtn');
+  const paisPanel = cont.querySelector('#comboPaisPanel');
+  const paisCaret = cont.querySelector('#comboPaisCaret');
+  if (paisBtn && paisPanel) paisBtn.onclick = (e) => {
+    e.stopPropagation();
+    const abierto = paisPanel.style.display === 'block';
+    cerrarTodosLosPaneles();
+    if (!abierto) { paisPanel.style.display = 'block'; if (paisCaret) paisCaret.textContent = '▲'; }
+  };
+  if (paisPanel) paisPanel.onclick = (e) => e.stopPropagation();
+  cont.querySelectorAll('.combo-pais-cb').forEach(cb => {
+    cb.onchange = () => {
+      const pais = cb.dataset.pais;
+      if (cb.checked) comboMinerasPaises.add(pais); else comboMinerasPaises.delete(pais);
+      // Al cambiar el país, las regiones peruanas que ya no apliquen se quitan del filtro.
+      if (!comboMinerasPaises.has('PE')) {
+        COMBO_REGIONES_PE.forEach(([k]) => comboRegionesActivas.delete(k));
+      }
+      renderCombo(); // re-render para reconstruir región (con/sin Perú) y contadores
+    };
+  });
+
   const minBuscar = cont.querySelector('#comboMinBuscar');
-  if (minBuscar) minBuscar.oninput = () => { comboMinerasTexto = minBuscar.value; _comboPintarMineras(); _comboActualizarContadores(); };
+  if (minBuscar) minBuscar.oninput = () => { comboMinerasTexto = minBuscar.value; _comboPintarMineras(); _comboActualizarContadores(); _comboPintarListaProyectos(); };
   cont.querySelectorAll('.combo-cat-cb').forEach(cb => {
     cb.onchange = () => {
       const cat = cb.dataset.cat;
