@@ -4027,6 +4027,7 @@
     align-items: center;
     justify-content: center;
   }
+  .combo-minera-cluster { transform: translate(14px, 12px); }
   .minera-cluster > div {
     width: 34px;
     height: 34px;
@@ -4038,7 +4039,8 @@
     justify-content: center;
     font-size: 12px;
     font-weight: 700;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+    border: 2px solid #fff;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.45);
   }
   .seia-cluster {
     background: rgba(5, 150, 105, 0.25);
@@ -4046,6 +4048,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    transform: translate(-14px, -12px);
   }
   .seia-cluster > div {
     width: 34px;
@@ -4058,7 +4061,8 @@
     justify-content: center;
     font-size: 12px;
     font-weight: 700;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+    border: 2px solid #fff;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.45);
   }
   /* Filtro de categorías de mineras (checkboxes bajo el toggle) */
   .mineras-cat-filtro {
@@ -29947,7 +29951,7 @@ function _comboPintarMineras() {
         chunkedLoading: true, maxClusterRadius: 50, spiderfyOnMaxZoom: true, showCoverageOnHover: false,
         iconCreateFunction: function (cluster) {
           const n = cluster.getChildCount();
-          return L.divIcon({ className: 'minera-cluster', html: '<div>' + n + '</div>', iconSize: [40, 40] });
+          return L.divIcon({ className: 'minera-cluster combo-minera-cluster', html: '<div>' + n + '</div>', iconSize: [40, 40] });
         },
       })
     : L.layerGroup();
