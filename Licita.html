@@ -4062,6 +4062,22 @@
     border: 2px solid #fff;
     box-shadow: 0 2px 6px rgba(0,0,0,0.45);
   }
+  .combo-etiqueta {
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .combo-etiqueta > span {
+    display: inline-block;
+    background: rgba(255,255,255,0.92);
+    color: #1a1a1a;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.25;
+    padding: 1px 6px;
+    border-radius: 3px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+    text-shadow: none;
+  }
   /* Filtro de categorías de mineras (checkboxes bajo el toggle) */
   .mineras-cat-filtro {
     display: flex;
@@ -29525,6 +29541,8 @@ let comboMinerasTexto = '';
 // y referencias id→marcador para poder resaltarlos en el mapa.
 let comboSeleccion = new Set();
 let _comboMarcadores = {};   // id -> { marker, tipo, baseStyle }
+let _comboEtiquetasLayer = null;   // capa de etiquetas de nombre (aparecen al acercar)
+const COMBO_ETIQUETAS_ZOOM_MIN = 9; // zoom a partir del cual se muestran nombres
 let comboListaTexto = '';    // filtro rápido dentro de la lista
 let _comboDocClickWired = false; // listener global de cierre instalado una sola vez
 // Ítems eliminados permanentemente (claves estables). Se persiste en Supabase.
@@ -29877,10 +29895,12 @@ function _comboPintarMapa() {
   });
   _comboSeiaLayer = null;
   _comboMinerasLayer = null;
-  // Al mover o hacer zoom, la lista refleja solo lo que cae en el recuadro visible.
-  _comboMap.on('moveend', () => { _comboPintarListaProyectos(); });
+  _comboEtiquetasLayer = null;
+  // Al mover o hacer zoom: la lista refleja el recuadro visible y se recalculan las etiquetas.
+  _comboMap.on('moveend', () => { _comboPintarListaProyectos(); _comboPintarEtiquetas(); });
   _comboPintarSeia();
   _comboPintarMineras();
+  _comboPintarEtiquetas();
   _comboPintarListaProyectos();
   setTimeout(() => { if (_comboMap) _comboMap.invalidateSize(); }, 100);
 }
@@ -29933,10 +29953,11 @@ function _comboPintarSeia() {
     if (p.sector) popup += '<div style="font-size:11.5px;"><b>Sector:</b> ' + escapeHtml(p.sector) + '</div>';
     marker.bindPopup(popup, { maxWidth: 280 });
     marker.addTo(grupo);
-    _comboMarcadores[id] = { marker, tipo: 'seia', color };
+    _comboMarcadores[id] = { marker, tipo: 'seia', color, nombre: p.nombre || '', lat: p.lat, lon: p.lon };
   });
   grupo.addTo(_comboMap);
   _comboSeiaLayer = grupo;
+  if (typeof _comboPintarEtiquetas === 'function') _comboPintarEtiquetas();
 }
 
 // Capa Mineras: clustering propio + registro de marcadores para resaltado.
@@ -29988,10 +30009,60 @@ function _comboPintarMineras() {
     if (ubic) popup += '<div style="font-size:11.5px;"><b>Ubicación:</b> ' + escapeHtml(ubic) + '</div>';
     marker.bindPopup(popup, { maxWidth: 280 });
     marker.addTo(grupo);
-    _comboMarcadores[id] = { marker, tipo: 'min', color: colorBase };
+    _comboMarcadores[id] = { marker, tipo: 'min', color: colorBase, nombre: f.e || '', lat: f.a, lon: f.o };
   });
   grupo.addTo(_comboMap);
   _comboMinerasLayer = grupo;
+  if (typeof _comboPintarEtiquetas === 'function') _comboPintarEtiquetas();
+}
+
+// Etiquetas con el nombre de cada punto. Solo aparecen al acercar lo suficiente
+// (zoom >= COMBO_ETIQUETAS_ZOOM_MIN) y se omiten las que se solaparían entre sí.
+function _comboPintarEtiquetas() {
+  if (!_comboMap) return;
+  if (_comboEtiquetasLayer) { try { _comboMap.removeLayer(_comboEtiquetasLayer); } catch(e){} _comboEtiquetasLayer = null; }
+  if (_comboMap.getZoom() < COMBO_ETIQUETAS_ZOOM_MIN) return; // alejado: sin etiquetas
+
+  const bounds = _comboMap.getBounds();
+  // Reúne candidatos visibles (en pantalla) con su posición en píxeles.
+  const candidatos = [];
+  Object.keys(_comboMarcadores).forEach(id => {
+    const ref = _comboMarcadores[id];
+    if (!ref || ref.lat == null || ref.lon == null || !ref.nombre) return;
+    if (!bounds.contains([ref.lat, ref.lon])) return;
+    const pt = _comboMap.latLngToLayerPoint([ref.lat, ref.lon]);
+    candidatos.push({ id, ref, x: pt.x, y: pt.y });
+  });
+  // Orden estable (por Y luego X) para un reparto consistente de cuáles se muestran.
+  candidatos.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+
+  const grupo = L.layerGroup();
+  const colocadas = []; // rectángulos ocupados {x1,y1,x2,y2}
+  const CHAR_W = 6.2, LABEL_H = 16, PAD_X = 8, OFFSET_X = 10; // estimaciones en px
+  for (const c of candidatos) {
+    const texto = c.ref.nombre.length > 26 ? c.ref.nombre.slice(0, 24) + '…' : c.ref.nombre;
+    const w = texto.length * CHAR_W + PAD_X;
+    // La etiqueta se dibuja a la derecha del punto, centrada verticalmente.
+    const x1 = c.x + OFFSET_X, y1 = c.y - LABEL_H / 2;
+    const x2 = x1 + w, y2 = y1 + LABEL_H;
+    // ¿Choca con alguna ya colocada?
+    let choca = false;
+    for (const r of colocadas) {
+      if (x1 < r.x2 && x2 > r.x1 && y1 < r.y2 && y2 > r.y1) { choca = true; break; }
+    }
+    if (choca) continue;
+    colocadas.push({ x1, y1, x2, y2 });
+    const colorBorde = c.ref.tipo === 'seia' ? '#059669' : '#B45309';
+    const icon = L.divIcon({
+      className: 'combo-etiqueta',
+      html: '<span style="border-left:3px solid ' + colorBorde + ';">' + escapeHtml(texto) + '</span>',
+      iconSize: null,
+      iconAnchor: [-OFFSET_X, LABEL_H / 2],
+    });
+    L.marker([c.ref.lat, c.ref.lon], { icon, interactive: false, keyboard: false }).addTo(grupo);
+  }
+  grupo.addTo(_comboMap);
+  _comboEtiquetasLayer = grupo;
 }
 
 // Actualiza contadores del header sin recrearlo.
@@ -30182,7 +30253,7 @@ function _comboActualizarSelInfo() {
 }
 
 function _comboWire(cont) {
-  const refrescarTodo = () => { _comboPintarSeia(); _comboPintarMineras(); _comboActualizarContadores(); _comboPintarListaProyectos(); };
+  const refrescarTodo = () => { _comboPintarSeia(); _comboPintarMineras(); _comboPintarEtiquetas(); _comboActualizarContadores(); _comboPintarListaProyectos(); };
   // Plegar/desplegar el sidebar (botón superior + pestaña lateral pegada al mapa)
   const sidebar = cont.querySelector('#comboSidebar');
   const sbToggle = cont.querySelector('#comboSidebarToggle');
