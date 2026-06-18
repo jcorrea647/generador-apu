@@ -26597,13 +26597,12 @@ function construirFilaExpandida(lic, enr) {
         <div class="lic-expand-section-title">💰 Aspectos financieros</div>
         <div class="lic-expand-grid">
           <div class="lic-expand-field">
-            <label>Presupuesto Referencial</label>
+            <label>Presupuesto Referencial (${escapeHtml(moneda)})</label>
             <div style="display:flex; gap:8px; align-items:center;">
-              <div style="font-size:14px; font-weight:700; color:#92400E; flex:1; padding: 7px 0;">
-                ${monto != null ? formatMonedaCL(monto, moneda) : '<span style="color:var(--text-mute); font-weight:400; font-style:italic;">sin definir</span>'}
-              </div>
-              <button class="btn-secondary btn-sm" data-action="edit-presupuesto" type="button" style="white-space:nowrap;">✏️ Editar</button>
+              <input type="text" inputmode="numeric" data-edit-presup-ref="1" value="${monto != null ? monto : ''}" placeholder="Ej. 1500000000" style="flex:1; font-size:14px; font-weight:700; color:#92400E;" />
+              <button class="btn-secondary btn-sm" data-action="edit-presupuesto" type="button" style="white-space:nowrap;" title="Abrir presupuesto detallado (versiones)">📊 Detalle</button>
             </div>
+            <div style="font-size:10.5px; color:var(--text-mute); margin-top:3px;">Escribe el monto y presiona Enter (o sal del campo) para guardar.</div>
           </div>
           <div class="lic-expand-field">
             <label>Margen Estimado del Negocio (%)</label>
@@ -26718,6 +26717,47 @@ function construirFilaExpandida(lic, enr) {
       }
     }, 400);
   });
+
+  // Campo directo de Presupuesto Referencial: escribe el monto y se guarda (oficial.valor)
+  const presupRefInput = td.querySelector('[data-edit-presup-ref]');
+  if (presupRefInput) {
+    let _presupRefGuardando = false;
+    const guardarPresupRef = async () => {
+      if (_presupRefGuardando) return;
+      _presupRefGuardando = true;
+      try {
+        // Normaliza: deja solo dígitos (admite separadores de miles que el usuario escriba)
+        const limpio = String(presupRefInput.value || '').replace(/[^\d]/g, '');
+        const valor = limpio === '' ? null : Number(limpio);
+        let presup = await cargarPresupuesto(lic.id);
+        if (!presup) {
+          presup = { moneda: 'CLP', versiones: [], oficial: { valor: null, fuente: null }, actualizadoAt: new Date().toISOString() };
+        }
+        if (!presup.oficial) presup.oficial = { valor: null, fuente: null };
+        // Solo se permite la edición directa cuando no hay versiones con monto (el referencial es el oficial)
+        const hayVersionConMonto = Array.isArray(presup.versiones) && presup.versiones.some(v => calcularTotalVersion(v) > 0);
+        if (hayVersionConMonto) {
+          alert('Este presupuesto ya tiene versiones con monto. Usa "📊 Detalle" para editarlas.');
+          _presupRefGuardando = false;
+          return;
+        }
+        presup.oficial.valor = valor;
+        if (valor != null && !presup.oficial.fuente) presup.oficial.fuente = 'Ingreso manual';
+        presup.actualizadoAt = new Date().toISOString();
+        await guardarPresupuesto(lic.id, presup);
+        invalidarCachePanel(lic.id);
+        renderPanelLicitaciones();
+      } catch (err) {
+        alert('No se pudo guardar el presupuesto referencial: ' + err.message);
+        _presupRefGuardando = false;
+      }
+    };
+    presupRefInput.addEventListener('click', (e) => e.stopPropagation());
+    presupRefInput.addEventListener('blur', guardarPresupRef);
+    presupRefInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); presupRefInput.blur(); }
+    });
+  }
 
   td.querySelector('[data-action="guardar"]').addEventListener('click', async (e) => {
     e.stopPropagation();
@@ -29836,6 +29876,7 @@ function renderCombo() {
         <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-serif);">🗺️ SEIA + Mineras</div>
         <div style="font-size:12px;color:var(--text-soft);">Mapa combinado · usa el panel de la izquierda para filtrar</div>
       </div>
+      <button id="comboExportSeia" title="Descargar la base de Proyectos SEIA cargada (Excel)" style="font-size:12px;padding:7px 12px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:#059669;cursor:pointer;font-family:inherit;font-weight:600;display:inline-flex;align-items:center;gap:6px;">⬇ Exportar SEIA</button>
       <button id="comboSidebarToggle" title="Mostrar/ocultar panel de filtros" style="font-size:12px;padding:7px 12px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:inline-flex;align-items:center;gap:6px;">⚙️ Filtros</button>
     </div>
 
@@ -30385,6 +30426,37 @@ function _comboActualizarSelInfo() {
 
 function _comboWire(cont) {
   const refrescarTodo = () => { _comboPintarSeia(); _comboPintarMineras(); _comboPintarEtiquetas(); _comboActualizarContadores(); _comboPintarListaProyectos(); };
+  // Exportar la base de Proyectos SEIA cargada (la que vive en Supabase / memoria)
+  const exportSeiaBtn = cont.querySelector('#comboExportSeia');
+  if (exportSeiaBtn) exportSeiaBtn.onclick = () => {
+    if (!proyectosSeia || !proyectosSeia.length) { alert('No hay proyectos SEIA cargados para exportar.'); return; }
+    if (typeof XLSX === 'undefined') { alert('La librería de Excel no está disponible.'); return; }
+    // Reconstruye filas con encabezados legibles (incluye todos los campos disponibles).
+    const filas = proyectosSeia.map(p => ({
+      'Nombre del Proyecto': p.nombre || '',
+      'WEB': p.web || '',
+      'Tipo de Presentación': p.tipo || '',
+      'Región': p.region || '',
+      'Comuna': p.comuna || '',
+      'Titular': p.titular || '',
+      'Inversión (MMU$)': p.inversion != null ? p.inversion : '',
+      'Fecha Presentación': p.fechaPres || '',
+      'Estado del Proyecto': p.estado || '',
+      'Fecha Calificación': p.fechaCalif || '',
+      'Sector Productivo': p.sector || '',
+      'Latitud': p.lat != null ? p.lat : '',
+      'Longitud': p.lon != null ? p.lon : '',
+    }));
+    try {
+      const ws = XLSX.utils.json_to_sheet(filas);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Proyectos SEIA');
+      const hoy = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(wb, 'proyectos_seia_' + hoy + '.xlsx');
+    } catch (e) {
+      alert('No se pudo exportar: ' + e.message);
+    }
+  };
   // Plegar/desplegar el sidebar (botón superior + pestaña lateral pegada al mapa)
   const sidebar = cont.querySelector('#comboSidebar');
   const sbToggle = cont.querySelector('#comboSidebarToggle');
