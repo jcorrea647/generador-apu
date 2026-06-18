@@ -4033,6 +4033,26 @@
     font-weight: 700;
     box-shadow: 0 2px 6px rgba(0,0,0,0.35);
   }
+  .seia-cluster {
+    background: rgba(5, 150, 105, 0.25);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .seia-cluster > div {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: #059669;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+  }
   /* Filtro de categorías de mineras (checkboxes bajo el toggle) */
   .mineras-cat-filtro {
     display: flex;
@@ -6337,8 +6357,8 @@
         <button class="btn-secondary" id="consultaNuevoTemaBtn" style="margin-top:10px;width:100%;font-size:12px;">+ Nuevo tema</button>
         <div style="border-top:1px dashed var(--border-soft);margin:10px 0;"></div>
         <button id="proveedoresBtn" style="width:100%;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🏢 Proveedores</button>
-        <button id="seiaBtn" style="width:100%;margin-top:6px;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🌎 Proyectos SEIA</button>
-        <button id="minerasBtn" style="width:100%;margin-top:6px;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">⛏️ Mineras CL</button>
+        <button id="seiaBtn" style="display:none;">🌎 Proyectos SEIA</button>
+        <button id="minerasBtn" style="display:none;">⛏️ Mineras CL</button>
         <button id="comboBtn" style="width:100%;margin-top:6px;font-size:12px;padding:8px 10px;border-radius:7px;border:1px solid #C7D9C9;background:#EAF3EC;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">🗺️ SEIA + Mineras</button>
       </div>
 
@@ -29619,12 +29639,12 @@ function renderCombo() {
     </label>`;
   }).join('');
 
-  // Multiselect SEIA (tamaño/sector/estado) como <select multiple> compactos
+  // Multiselect SEIA (tamaño/sector/estado) apilados en el sidebar
   const mkSelect = (campo, titulo, accent) => {
     const ops = _comboSeiaOpciones(campo);
     const sel = comboSeiaFiltros[campo];
     const items = ops.map(o => `<option value="${escapeHtml(o.valor)}" ${sel.has(o.valor)?'selected':''}>${escapeHtml(o.label)} (${o.count})</option>`).join('');
-    return `<div style="flex:1;min-width:150px;">
+    return `<div style="margin-bottom:9px;">
       <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:3px;">${titulo}${sel.size?` · ${sel.size}`:''}</label>
       <select multiple class="combo-seia-sel" data-campo="${campo}" size="4" style="width:100%;box-sizing:border-box;padding:4px;border:1px solid ${sel.size?accent:'var(--border)'};border-radius:7px;font-family:inherit;font-size:11.5px;background:var(--surface);color:var(--text);">${items}</select>
     </div>`;
@@ -29642,71 +29662,77 @@ function renderCombo() {
   }).join('');
 
   cont.innerHTML = `
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
       <div style="flex:1;min-width:200px;">
         <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-serif);">🗺️ SEIA + Mineras</div>
-        <div style="font-size:12px;color:var(--text-soft);">Dos capas en un mapa · región aplica a ambas · cada capa con sus propios filtros</div>
+        <div style="font-size:12px;color:var(--text-soft);">Mapa combinado · usa el panel de la izquierda para filtrar</div>
       </div>
+      <button id="comboSidebarToggle" title="Mostrar/ocultar panel de filtros" style="font-size:12px;padding:7px 12px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:inline-flex;align-items:center;gap:6px;">⚙️ Filtros</button>
     </div>
 
-    <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:10px 12px;background:var(--surface-warm);border:1px solid var(--border);border-radius:10px;">
-      <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;user-select:none;">
-        <input type="checkbox" id="comboToggleSeia" ${comboCapaSeia?'checked':''} style="width:16px;height:16px;cursor:pointer;accent-color:#059669;">
-        <span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#059669;border:1.5px solid #fff;box-shadow:0 0 0 1px #059669;"></span>
-        <b>Proyectos SEIA</b> <span style="color:var(--text-soft);font-size:12px;">(<span id="comboCountSeia">${seiaF.length}</span>)</span>
-      </label>
-      <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;user-select:none;">
-        <input type="checkbox" id="comboToggleMineras" ${comboCapaMineras?'checked':''} style="width:16px;height:16px;cursor:pointer;accent-color:#B45309;">
-        <span style="display:inline-block;width:10px;height:10px;background:#B45309;transform:rotate(45deg);"></span>
-        <b>Mineras CL</b> <span style="color:var(--text-soft);font-size:12px;">(<span id="comboCountMineras">${minF.length}</span>)</span>
-      </label>
-    </div>
+    <div id="comboLayout" style="display:flex;gap:14px;align-items:stretch;">
+      <!-- ===== SIDEBAR DE FILTROS ===== -->
+      <aside id="comboSidebar" style="width:312px;flex-shrink:0;border:1px solid var(--border);border-radius:12px;background:var(--surface);overflow-y:auto;max-height:660px;padding:14px;box-sizing:border-box;">
 
-    <div style="margin-bottom:10px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:5px;">
-        <label style="font-size:11px;font-weight:600;color:var(--text-soft);">Región (una o varias) — aplica a AMBAS capas</label>
-        <button id="comboRegTodas" style="font-size:11.5px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:2px 4px;">↺ Todas las regiones</button>
-      </div>
-      <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;">${chips}</div>
-    </div>
+        <!-- Paso 1: capas -->
+        <div style="margin-bottom:16px;">
+          <div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px;display:flex;align-items:center;gap:6px;"><span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:10px;">1</span> ¿Qué capas mostrar?</div>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;user-select:none;padding:7px 9px;border-radius:8px;background:var(--surface-warm);margin-bottom:6px;">
+            <input type="checkbox" id="comboToggleSeia" ${comboCapaSeia?'checked':''} style="width:16px;height:16px;cursor:pointer;accent-color:#059669;">
+            <span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#059669;border:1.5px solid #fff;box-shadow:0 0 0 1px #059669;flex-shrink:0;"></span>
+            <b style="flex:1;">Proyectos SEIA</b> <span style="color:var(--text-soft);font-size:12px;">(<span id="comboCountSeia">${seiaF.length}</span>)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;user-select:none;padding:7px 9px;border-radius:8px;background:var(--surface-warm);">
+            <input type="checkbox" id="comboToggleMineras" ${comboCapaMineras?'checked':''} style="width:16px;height:16px;cursor:pointer;accent-color:#B45309;">
+            <span style="display:inline-block;width:10px;height:10px;background:#B45309;transform:rotate(45deg);flex-shrink:0;"></span>
+            <b style="flex:1;">Mineras CL</b> <span style="color:var(--text-soft);font-size:12px;">(<span id="comboCountMineras">${minF.length}</span>)</span>
+          </label>
+        </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
-      <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface);">
-        <div style="font-size:12px;font-weight:700;color:#059669;margin-bottom:8px;">🌎 Filtros SEIA</div>
-        <div style="margin-bottom:8px;">
-          <div style="position:relative;">
+        <!-- Paso 2: región (ambas capas) -->
+        <div style="margin-bottom:16px;border-top:1px solid var(--border-soft);padding-top:14px;">
+          <div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;display:flex;align-items:center;gap:6px;"><span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:10px;">2</span> Región</div>
+          <div style="font-size:11px;color:var(--text-mute);margin-bottom:8px;">Aplica a ambas capas. Sin marcar = todas.</div>
+          <div style="display:flex;flex-direction:column;gap:4px;">${chips}</div>
+          <button id="comboRegTodas" style="margin-top:8px;font-size:11.5px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:2px 0;">↺ Todas las regiones</button>
+        </div>
+
+        <!-- Paso 3: filtros SEIA -->
+        <div id="comboSeiaFiltrosBox" style="margin-bottom:16px;border-top:1px solid var(--border-soft);padding-top:14px;${comboCapaSeia?'':'opacity:0.45;'}">
+          <div style="font-size:11px;font-weight:700;color:#059669;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px;display:flex;align-items:center;gap:6px;"><span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#059669;color:#fff;font-size:10px;">3</span> Filtros SEIA</div>
+          <div style="position:relative;margin-bottom:9px;">
             <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);opacity:0.5;font-size:12px;pointer-events:none;">🔍</span>
             <input type="text" id="comboSeiaBuscar" placeholder="Buscar proyecto por nombre…" value="${escapeHtml(comboSeiaFiltros.texto||'')}" style="width:100%;box-sizing:border-box;padding:7px 9px 7px 28px;border:1px solid ${comboSeiaFiltros.texto?'#059669':'var(--border)'};border-radius:7px;font-family:inherit;font-size:12px;background:var(--surface);color:var(--text);" />
           </div>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
           ${mkSelect('tamano','Tamaño','#059669')}
           ${mkSelect('estado','Estado','#059669')}
           ${mkSelect('sector','Sector','#059669')}
+          ${hayFiltroSeia?`<div style="margin-top:8px;"><a href="#" id="comboSeiaLimpiar" style="font-size:11px;color:var(--accent-dark);text-decoration:underline;">Limpiar filtros SEIA</a></div>`:''}
         </div>
-        ${hayFiltroSeia?`<div style="margin-top:7px;"><a href="#" id="comboSeiaLimpiar" style="font-size:11px;color:var(--accent-dark);text-decoration:underline;">Limpiar filtros SEIA</a></div>`:''}
-      </div>
-      <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface);">
-        <div style="font-size:12px;font-weight:700;color:#B45309;margin-bottom:8px;">⛏️ Filtros Mineras</div>
-        <div style="margin-bottom:8px;">
-          <div style="position:relative;">
+
+        <!-- Paso 4: filtros Mineras -->
+        <div id="comboMinFiltrosBox" style="border-top:1px solid var(--border-soft);padding-top:14px;${comboCapaMineras?'':'opacity:0.45;'}">
+          <div style="font-size:11px;font-weight:700;color:#B45309;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px;display:flex;align-items:center;gap:6px;"><span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#B45309;color:#fff;font-size:10px;">4</span> Filtros Mineras</div>
+          <div style="position:relative;margin-bottom:9px;">
             <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);opacity:0.5;font-size:12px;pointer-events:none;">🔍</span>
             <input type="text" id="comboMinBuscar" placeholder="Buscar por empresa o faena…" value="${escapeHtml(comboMinerasTexto||'')}" style="width:100%;box-sizing:border-box;padding:7px 9px 7px 28px;border:1px solid ${comboMinerasTexto?'#B45309':'var(--border)'};border-radius:7px;font-family:inherit;font-size:12px;background:var(--surface);color:var(--text);" />
           </div>
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:6px;">Categoría de la faena</label>
+          <div style="display:flex;flex-direction:column;gap:5px;">${catChips}</div>
+          <button id="comboCatTodas" style="margin-top:8px;font-size:11.5px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:2px 0;">↺ Todas las categorías</button>
+          ${hayFiltroMin?`<div style="margin-top:8px;"><a href="#" id="comboMinLimpiar" style="font-size:11px;color:var(--accent-dark);text-decoration:underline;">Limpiar filtros Mineras</a></div>`:''}
         </div>
-        <label style="display:block;font-size:11px;font-weight:600;color:var(--text-soft);margin-bottom:5px;">Categoría</label>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-          ${catChips}
-          <button id="comboCatTodas" style="font-size:11px;border:none;background:transparent;color:var(--accent-dark);text-decoration:underline;cursor:pointer;font-family:inherit;padding:3px 5px;">↺ Todas</button>
-        </div>
-        ${hayFiltroMin?`<div style="margin-top:7px;"><a href="#" id="comboMinLimpiar" style="font-size:11px;color:var(--accent-dark);text-decoration:underline;">Limpiar filtros Mineras</a></div>`:''}
-      </div>
-    </div>
 
-    <div id="comboMap" style="width:100%;height:520px;border:1px solid var(--border);border-radius:12px;overflow:hidden;"></div>
-    <div style="font-size:11px;color:var(--text-mute);margin-top:6px;">
-      🟢 SEIA: color por estado (verde aprobado · ámbar en calificación · rojo rechazado).
-      🔶 Mineras: 🟤 metálico / ⚪ industrial. Mapa físico por defecto (cambia la capa base arriba a la derecha).
+      </aside>
+
+      <!-- ===== MAPA ===== -->
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;">
+        <div id="comboMap" style="width:100%;height:640px;border:1px solid var(--border);border-radius:12px;overflow:hidden;"></div>
+        <div style="font-size:11px;color:var(--text-mute);margin-top:6px;">
+          🟢 SEIA: color por estado (verde aprobado · ámbar en calificación · rojo rechazado).
+          🔶 Mineras: 🟤 metálico / ⚪ industrial. Mapa físico por defecto (cambia la capa base arriba a la derecha del mapa).
+        </div>
+      </div>
     </div>
   `;
 
@@ -29748,12 +29774,28 @@ function _comboPintarMapa() {
   setTimeout(() => { if (_comboMap) _comboMap.invalidateSize(); }, 100);
 }
 
-// Capa SEIA: circleMarker por estado (reutiliza _seiaColorEstado).
+// Capa SEIA: circleMarker por estado (reutiliza _seiaColorEstado), con clustering.
 function _comboPintarSeia() {
   if (!_comboMap) return;
   if (_comboSeiaLayer) { try { _comboMap.removeLayer(_comboSeiaLayer); } catch(e){} _comboSeiaLayer = null; }
   if (!comboCapaSeia) return;
-  const grupo = L.layerGroup();
+  const usarCluster = typeof L.markerClusterGroup === 'function';
+  const grupo = usarCluster
+    ? L.markerClusterGroup({
+        chunkedLoading: true,
+        maxClusterRadius: 50,
+        spiderfyOnMaxZoom: true,
+        showCoverageOnHover: false,
+        iconCreateFunction: function (cluster) {
+          const n = cluster.getChildCount();
+          return L.divIcon({
+            className: 'seia-cluster',
+            html: '<div>' + n + '</div>',
+            iconSize: [40, 40],
+          });
+        },
+      })
+    : L.layerGroup();
   _comboSeiaFiltrados().forEach(p => {
     const color = _seiaColorEstado(p.estado);
     const marker = L.circleMarker([p.lat, p.lon], {
@@ -29789,12 +29831,31 @@ function _comboActualizarContadores() {
 
 function _comboWire(cont) {
   const refrescarTodo = () => { _comboPintarSeia(); _comboPintarMineras(); _comboActualizarContadores(); };
-  // Toggle capa SEIA
+  // Botón plegar/desplegar el sidebar de filtros
+  const sbToggle = cont.querySelector('#comboSidebarToggle');
+  const sidebar = cont.querySelector('#comboSidebar');
+  if (sbToggle && sidebar) sbToggle.onclick = () => {
+    const oculto = sidebar.style.display === 'none';
+    sidebar.style.display = oculto ? 'block' : 'none';
+    sbToggle.style.background = oculto ? 'var(--surface)' : 'var(--accent-lightest)';
+    setTimeout(() => { if (_comboMap) _comboMap.invalidateSize(); }, 60);
+  };
+  // Toggle capa SEIA (atenúa su panel de filtros cuando está apagada)
   const tSeia = cont.querySelector('#comboToggleSeia');
-  if (tSeia) tSeia.onchange = () => { comboCapaSeia = tSeia.checked; _comboPintarSeia(); };
+  const seiaBox = cont.querySelector('#comboSeiaFiltrosBox');
+  if (tSeia) tSeia.onchange = () => {
+    comboCapaSeia = tSeia.checked;
+    if (seiaBox) seiaBox.style.opacity = comboCapaSeia ? '1' : '0.45';
+    _comboPintarSeia();
+  };
   // Toggle capa Mineras
   const tMin = cont.querySelector('#comboToggleMineras');
-  if (tMin) tMin.onchange = () => { comboCapaMineras = tMin.checked; _comboPintarMineras(); };
+  const minBox = cont.querySelector('#comboMinFiltrosBox');
+  if (tMin) tMin.onchange = () => {
+    comboCapaMineras = tMin.checked;
+    if (minBox) minBox.style.opacity = comboCapaMineras ? '1' : '0.45';
+    _comboPintarMineras();
+  };
 
   // Chips de región (aplican a ambas capas en vivo)
   cont.querySelectorAll('.combo-reg-cb').forEach(cb => {
