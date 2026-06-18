@@ -25291,27 +25291,65 @@ async function extraerYGuardarUbicacion(forzar) {
   return ubicacion;
 }
 
+// Corrige/valida las coordenadas devueltas por la IA usando el diccionario local
+// de comunas chilenas. Si la comuna o dirección coincide con una comuna conocida,
+// se usan SIEMPRE las coordenadas locales confiables (la IA tiende a alucinar lat/lng).
+// Esto evita respuestas "nada que ver" como coordenadas de una mina no relacionada.
+function corregirUbicacionConDiccionario(ubic) {
+  if (!ubic || typeof ubic !== 'object') return ubic;
+  // Buscar PRIMERO solo en el campo comuna (más específico). Si no hay match,
+  // recién entonces ampliar a dirección/sector. NO usar el campo región para
+  // resolver coordenadas: "Región de Antofagasta" haría match con la CIUDAD de
+  // Antofagasta aunque la comuna real sea Calama u otra.
+  let local = ubic.comuna ? buscarUbicacionLocal(ubic.comuna) : null;
+  if (!local) {
+    const textoAmplio = [ubic.direccion, ubic.sector].filter(Boolean).join(' ');
+    if (textoAmplio) local = buscarUbicacionLocal(textoAmplio);
+  }
+  if (local) {
+    const latNum = typeof ubic.lat === 'number' ? ubic.lat : null;
+    const lngNum = typeof ubic.lng === 'number' ? ubic.lng : null;
+    // ¿Las coords de la IA están lejos (>~55 km, ~0.5°) de la comuna reconocida, o faltan?
+    const lejos = latNum == null || lngNum == null ||
+      Math.abs(latNum - local.coords.lat) > 0.5 ||
+      Math.abs(lngNum - local.coords.lng) > 0.5;
+    if (lejos) {
+      ubic.lat = local.coords.lat;
+      ubic.lng = local.coords.lng;
+      if (!ubic.region) ubic.region = local.coords.region;
+      const nombreCap = local.nombre.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+      const aviso = `Coordenadas ajustadas al centro de ${nombreCap} (comuna reconocida en el documento).`;
+      ubic.notas = ubic.notas ? `${ubic.notas} ${aviso}` : aviso;
+    }
+  }
+  return ubic;
+}
+
 async function extraerUbicacionConIA() {
   if (!chatState.preparedContext || chatState.preparedContext.length === 0) return null;
 
   const provider = MODELS[chatState.currentModel].provider;
-  const promptUbicacion = `Identifica la ubicación de la obra basándote SOLO en los documentos cargados.
+  const promptUbicacion = `Identifica la ubicación de la obra basándote ÚNICA y EXCLUSIVAMENTE en los documentos cargados. NO uses conocimiento externo ni ejemplos de otros proyectos.
+
+Busca en los documentos los datos explícitos de ubicación, que suelen aparecer en el cuadro de "Identificación y ubicación de las obras", el nombre de la obra, o el encabezado de las planillas. Datos típicos: nombre de la obra, ruta/camino, sector, tramo (DM/kilometraje), comuna, provincia, región.
 
 Responde ÚNICAMENTE con un objeto JSON con esta estructura exacta:
 {
-  "direccion": "Dirección textual lo más completa posible (calle, comuna, región, país)",
-  "comuna": "Comuna principal",
-  "region": "Región (ej: 'Atacama', 'Metropolitana')",
+  "direccion": "Descripción textual de la ubicación tal como aparece en el documento (ruta, tramo, comuna, provincia, región, país)",
+  "comuna": "Comuna principal mencionada en el documento",
+  "region": "Región mencionada en el documento",
   "pais": "Chile",
-  "lat": -27.5125,
-  "lng": -70.3789,
-  "sector": "Sector específico dentro del proyecto (ej: 'Caminos externos sector norte de la mina')",
-  "notas": "Observaciones sobre acceso, restricciones o particularidades"
+  "lat": <número o null>,
+  "lng": <número o null>,
+  "sector": "Sector/tramo específico tal como lo nombra el documento",
+  "notas": "Observaciones de acceso o particularidades SI el documento las menciona; si no, deja vacío"
 }
 
-Reglas:
-- Si no encuentras coordenadas exactas, usa las aproximadas de la comuna o ciudad más cercana mencionada en los documentos. Para mineras conocidas en Chile, usa coordenadas aproximadas (ej: Mina Candelaria: -27.5125, -70.3789).
-- Si NO se encuentra la ubicación en los documentos, devuelve igual JSON pero con: lat: null, lng: null, "direccion": "No especificado en los documentos".
+Reglas estrictas:
+- Toma comuna, provincia, región, ruta y tramo TEXTUALMENTE de los documentos. No los deduzcas ni los reemplaces por otros.
+- Para lat/lng: usa coordenadas SOLO si el documento las entrega, o las coordenadas aproximadas del CENTRO DE LA COMUNA que el documento nombra explícitamente. NUNCA inventes coordenadas de minas, proyectos u otras ubicaciones que no estén nombradas en el documento.
+- Si el documento NO nombra una comuna/ciudad ni entrega coordenadas, devuelve lat: null, lng: null y "direccion": "No especificado en los documentos".
+- Si tienes dudas entre dos ubicaciones, elige la que aparece en el nombre oficial de la obra y acláralo en "notas".
 - NO uses markdown, NO uses fences \\\`\\\`\\\`, NO incluyas texto antes ni después del JSON.
 - JSON parseable, sin comentarios ni trailing commas.`;
 
@@ -25351,10 +25389,10 @@ Reglas:
 
       const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('') || '';
       try {
-        return JSON.parse(text);
+        return corregirUbicacionConDiccionario(JSON.parse(text));
       } catch(e) {
         const m = text.match(/\{[\s\S]*\}/);
-        if (m) return JSON.parse(m[0]);
+        if (m) return corregirUbicacionConDiccionario(JSON.parse(m[0]));
         return null;
       }
     } else if (provider === 'anthropic') {
@@ -25384,10 +25422,10 @@ Reglas:
       let text = data.content.filter(c => c.type === 'text').map(c => c.text).join('').trim();
       text = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
       try {
-        return JSON.parse(text);
+        return corregirUbicacionConDiccionario(JSON.parse(text));
       } catch(e) {
         const m = text.match(/\{[\s\S]*\}/);
-        if (m) return JSON.parse(m[0]);
+        if (m) return corregirUbicacionConDiccionario(JSON.parse(m[0]));
         return null;
       }
     }
