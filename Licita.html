@@ -29877,6 +29877,8 @@ function _comboPintarMapa() {
   });
   _comboSeiaLayer = null;
   _comboMinerasLayer = null;
+  // Al mover o hacer zoom, la lista refleja solo lo que cae en el recuadro visible.
+  _comboMap.on('moveend', () => { _comboPintarListaProyectos(); });
   _comboPintarSeia();
   _comboPintarMineras();
   _comboPintarListaProyectos();
@@ -30001,8 +30003,13 @@ function _comboActualizarContadores() {
 // Construye la lista [{id, nombre, sub, tipo, color, delKey}] de lo visible según filtros.
 function _comboListaItems() {
   const items = [];
+  // Límites visibles del mapa: solo se listan los que caen dentro del recuadro actual.
+  let bounds = null;
+  if (_comboMap && _comboMap.getBounds) { try { bounds = _comboMap.getBounds(); } catch(e){} }
+  const dentro = (lat, lon) => !bounds || bounds.contains([lat, lon]);
   if (comboCapaSeia) {
     _comboSeiaFiltrados().forEach((p, idx) => {
+      if (!dentro(p.lat, p.lon)) return;
       items.push({
         id: 'seia:' + (p.id || idx), tipo: 'seia',
         nombre: p.nombre || '(sin nombre)',
@@ -30020,6 +30027,7 @@ function _comboListaItems() {
       if (!comboMinerasCats.has(f.c || 'S/C')) return;
       if (txt) { const emp=_seiaNorm(f.e||''), fae=_seiaNorm(f.n||''); if (!emp.includes(txt)&&!fae.includes(txt)) return; }
       if (f.a == null || f.o == null) return;
+      if (!dentro(f.a, f.o)) return;
       items.push({
         id: 'min:' + idx, tipo: 'min',
         nombre: f.e || '(sin empresa)',
