@@ -29826,9 +29826,9 @@ function _comboPintarMapa() {
   const capaSatelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
     attribution: '© Esri, Maxar, Earthstar Geographics', maxZoom: maxZoom,
   });
-  // Etiquetas (nombres de ciudades, pueblos, calles) para superponer sobre el satélite
-  const capaEtiquetas = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', {
-    attribution: '© CARTO', subdomains: 'abcd', maxZoom: maxZoom, pane: 'overlayPane',
+  // Etiquetas (ciudades, pueblos, límites) de Esri — mejor cobertura de localidades pequeñas
+  const capaEtiquetas = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+    attribution: '© Esri', maxZoom: maxZoom, pane: 'overlayPane',
   });
   capaSatelite.addTo(_comboMap);   // ← satélite por defecto
   capaEtiquetas.addTo(_comboMap);   // ← con nombres de ciudades/poblados encima
