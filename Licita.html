@@ -14035,9 +14035,11 @@ const PARSER_OBRA = {
   _esAgregacion(desc) { return this._RE_AGREGACION.test((desc || '').trim()); },
 
   // 3.1 — Detección de partidas de cubicación
-  // Código MOP: 3 dígitos - número, con sufijo de letra opcional (408-1, 605-2a, 613-1b).
-  // (Se exige el guion para no confundir con kilometrajes "9.440" de las planillas de perfiles.)
-  _RE_CODIGO: /^\d{3}-\d+[a-z]?$/i,
+  // Código MOP: 3 dígitos - número, con sufijos opcionales de letra y/o punto.
+  // Cubre: 408-1, 605-2a, 613-1b (letra pegada); 408-1.A, 612-1.E, 712-1.C (punto+letra);
+  // 704-1.B.1, 704-1.B.2 (sufijos encadenados con punto). El guion inicial es obligatorio
+  // para no confundir con kilometrajes "9.440" de las planillas de perfiles.
+  _RE_CODIGO: /^\d{3}-\d+(?:[a-z]|\.[a-z0-9]+)*$/i,
   // Unidad en la descripción, entre paréntesis: "(m3)", "(m2)"
   _RE_UNIDAD_DESC: /\((m3|m2|m|kg|ml|un|gl|km|%)\)/i,
   // Unidad como celda independiente: "m", "m²", "kg", o con paréntesis "(m2)", "(m3)".
