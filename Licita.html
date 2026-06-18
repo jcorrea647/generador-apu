@@ -28678,7 +28678,10 @@ async function construirIndiceConsulta(tema) {
 function buscarEnIndiceConsulta(indice, consulta, topK = 8) {
   if (!indice || !indice.chunks.length) return [];
   const k1 = 1.5, b = 0.75;
-  const qTerms = [...new Set(RAG._tokenizar(consulta))];
+  const qBase = [...new Set(RAG._tokenizar(consulta))];
+  const qSet = new Set(qBase);                    // términos del usuario (peso completo)
+  const qTerms = RAG._expandirTerminos(qBase);    // + sinónimos de dominio (red de seguridad local)
+  const PESO_SINONIMO = 0.5;
   const res = [];
   for (const c of indice.chunks) {
     let score = 0;
@@ -28686,7 +28689,8 @@ function buscarEnIndiceConsulta(indice, consulta, topK = 8) {
       const f = c._tf[t]; if (!f) continue;
       const idf = indice.idf[t] || 0;
       const denom = f + k1 * (1 - b + b * (c._len / indice.avgLen));
-      score += idf * (f * (k1 + 1)) / denom;
+      const w = qSet.has(t) ? 1 : PESO_SINONIMO;
+      score += w * idf * (f * (k1 + 1)) / denom;
     }
     if (score > 0) res.push({ chunk: c, score });
   }
@@ -33732,6 +33736,38 @@ const RAG = {
       .filter(t => t.length >= 2);
   },
 
+  // --- Diccionario de expansión de dominio (licitaciones MOP / construcción) ---
+  // BM25 es matching léxico puro: si el usuario pregunta por "presupuesto" pero la
+  // tabla del documento dice "monto / especialidad", nunca matchea. Aquí mapeamos
+  // términos coloquiales a los términos reales con que el dato aparece escrito.
+  // Se aplica SIEMPRE y de forma local (no depende de la IA), como red de seguridad.
+  _SINONIMOS_DOMINIO: {
+    presupuesto: ['monto', 'especialidad', 'estimado', 'oficial', 'valor', 'costo', 'cd', 'directo'],
+    monto: ['presupuesto', 'valor', 'especialidad'],
+    plazo: ['dias', 'corridos', 'ejecucion', 'vigencia', 'duracion'],
+    garantia: ['boleta', 'caucion', 'fiel', 'cumplimiento', 'seriedad', 'poliza'],
+    seriedad: ['garantia', 'boleta', 'oferta'],
+    experiencia: ['acreditar', 'obras', 'contratos', 'antecedentes', 'similares'],
+    categoria: ['registro', 'rcop', 'primera', 'segunda', 'oc'],
+    multa: ['sancion', 'penalidad', 'descuento'],
+    anticipo: ['adelanto'],
+    reajuste: ['polinomico', 'ipc'],
+    personal: ['profesional', 'clave', 'equipo', 'organigrama', 'cargo'],
+    visita: ['terreno', 'obligatoria'],
+    propuesta: ['oferta', 'tecnica', 'economica'],
+    pavimento: ['pavimentos', 'asfalto', 'carpeta'],
+  },
+
+  // Expande la lista de términos de la consulta agregando sinónimos de dominio.
+  _expandirTerminos(qTerms) {
+    const set = new Set(qTerms);
+    for (const t of qTerms) {
+      const syn = this._SINONIMOS_DOMINIO[t];
+      if (syn) for (const s of syn) set.add(s);
+    }
+    return [...set];
+  },
+
   // --- Convierte tablas HTML a texto compacto (filas con celdas separadas por |) ---
   // Reduce tokens (quita etiquetas) y mejora cómo la IA lee las tablas.
   _limpiarHtml(texto) {
@@ -33961,7 +33997,10 @@ const RAG = {
   buscar(consulta, topK = 8) {
     if (!this.indexado || !this.chunks.length) return [];
     const k1 = 1.5, b = 0.75;   // parámetros estándar de BM25
-    const qTerms = [...new Set(this._tokenizar(consulta))];
+    const qBase = [...new Set(this._tokenizar(consulta))];
+    const qSet = new Set(qBase);                       // términos del usuario (peso completo)
+    const qTerms = this._expandirTerminos(qBase);      // + sinónimos de dominio
+    const PESO_SINONIMO = 0.5;                         // los sinónimos pesan la mitad
     const RE_PRIORIDAD = /respuesta|consulta|aclaraci|aclaratori|circular|adenda|addenda|enmienda|foro/i;
     const BOOST_PRIORIDAD = 1.4; // +40% al score de documentos que prevalecen
     const resultados = [];
@@ -33972,7 +34011,8 @@ const RAG = {
         if (!f) continue;
         const idf = this.idf[t] || 0;
         const denom = f + k1 * (1 - b + b * (c._len / this.avgLen));
-        score += idf * (f * (k1 + 1)) / denom;
+        const w = qSet.has(t) ? 1 : PESO_SINONIMO;
+        score += w * idf * (f * (k1 + 1)) / denom;
       }
       if (score > 0) {
         // Realce por jerarquía documental (nombre del documento de origen)
