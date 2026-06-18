@@ -4065,6 +4065,9 @@
   .combo-etiqueta {
     pointer-events: none;
     white-space: nowrap;
+    display: flex;
+    align-items: center;
+    overflow: visible;
   }
   .combo-etiqueta > span {
     display: inline-block;
@@ -4072,7 +4075,7 @@
     color: #1a1a1a;
     font-size: 11px;
     font-weight: 600;
-    line-height: 1.25;
+    line-height: 1.3;
     padding: 1px 6px;
     border-radius: 3px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.4);
@@ -30024,12 +30027,30 @@ function _comboPintarEtiquetas() {
   if (_comboMap.getZoom() < COMBO_ETIQUETAS_ZOOM_MIN) return; // alejado: sin etiquetas
 
   const bounds = _comboMap.getBounds();
-  // Reúne candidatos visibles (en pantalla) con su posición en píxeles.
+  // ¿El marcador está visible individualmente (no agrupado dentro de un clúster)?
+  const visibleIndividual = (ref) => {
+    const m = ref.marker;
+    if (!m) return false;
+    // markercluster: getVisibleParent devuelve un clúster si el marcador está agrupado
+    let grupoCluster = null;
+    if (ref.tipo === 'seia' && _comboSeiaLayer && _comboSeiaLayer.getVisibleParent) grupoCluster = _comboSeiaLayer;
+    else if (ref.tipo === 'min' && _comboMinerasLayer && _comboMinerasLayer.getVisibleParent) grupoCluster = _comboMinerasLayer;
+    if (grupoCluster) {
+      try {
+        const vp = grupoCluster.getVisibleParent(m);
+        // Si el padre visible NO es el propio marcador, está dentro de un clúster
+        if (vp && vp !== m) return false;
+      } catch (e) {}
+    }
+    return true;
+  };
+  // Reúne candidatos visibles (en pantalla, e individuales) con su posición en píxeles.
   const candidatos = [];
   Object.keys(_comboMarcadores).forEach(id => {
     const ref = _comboMarcadores[id];
     if (!ref || ref.lat == null || ref.lon == null || !ref.nombre) return;
     if (!bounds.contains([ref.lat, ref.lon])) return;
+    if (!visibleIndividual(ref)) return; // omitir los que están dentro de un clúster
     const pt = _comboMap.latLngToLayerPoint([ref.lat, ref.lon]);
     candidatos.push({ id, ref, x: pt.x, y: pt.y });
   });
@@ -30038,10 +30059,10 @@ function _comboPintarEtiquetas() {
 
   const grupo = L.layerGroup();
   const colocadas = []; // rectángulos ocupados {x1,y1,x2,y2}
-  const CHAR_W = 6.2, LABEL_H = 16, PAD_X = 8, OFFSET_X = 10; // estimaciones en px
+  const CHAR_W = 6.2, LABEL_H = 18, PAD_X = 10, OFFSET_X = 12; // estimaciones en px
   for (const c of candidatos) {
     const texto = c.ref.nombre.length > 26 ? c.ref.nombre.slice(0, 24) + '…' : c.ref.nombre;
-    const w = texto.length * CHAR_W + PAD_X;
+    const w = Math.ceil(texto.length * CHAR_W + PAD_X);
     // La etiqueta se dibuja a la derecha del punto, centrada verticalmente.
     const x1 = c.x + OFFSET_X, y1 = c.y - LABEL_H / 2;
     const x2 = x1 + w, y2 = y1 + LABEL_H;
@@ -30053,10 +30074,12 @@ function _comboPintarEtiquetas() {
     if (choca) continue;
     colocadas.push({ x1, y1, x2, y2 });
     const colorBorde = c.ref.tipo === 'seia' ? '#059669' : '#B45309';
+    // iconSize explícito + iconAnchor en la esquina sup-izq desplazada: la etiqueta
+    // arranca OFFSET_X px a la derecha del punto y queda centrada verticalmente.
     const icon = L.divIcon({
       className: 'combo-etiqueta',
       html: '<span style="border-left:3px solid ' + colorBorde + ';">' + escapeHtml(texto) + '</span>',
-      iconSize: null,
+      iconSize: [w, LABEL_H],
       iconAnchor: [-OFFSET_X, LABEL_H / 2],
     });
     L.marker([c.ref.lat, c.ref.lon], { icon, interactive: false, keyboard: false }).addTo(grupo);
