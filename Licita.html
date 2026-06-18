@@ -24058,6 +24058,17 @@ async function guardarUbicacion(licId, ubicacion) {
   await dbPut({id: `${UBIC_KEY_PREFIX}${licId}`, value: ubicacion});
 }
 
+// Helper centralizado: guarda la ubicación, actualiza el botón, invalida el
+// cache del panel y re-renderiza el panel+mapa. Úsalo en TODOS los flujos de
+// guardado de ubicación para que el cambio se refleje de inmediato en la otra
+// pantalla (antes algunos flujos guardaban pero no refrescaban el panel).
+async function guardarUbicacionYRefrescar(licId, ubicacion) {
+  await guardarUbicacion(licId, ubicacion);
+  try { actualizarBotonUbicacion(ubicacion); } catch(e) {}
+  try { invalidarCachePanel(licId); } catch(e) {}
+  try { if (typeof renderPanelLicitaciones === 'function') await renderPanelLicitaciones(); } catch(e) {}
+}
+
 async function cargarUbicacion(licId) {
   try {
     const r = await dbGet(`${UBIC_KEY_PREFIX}${licId}`);
@@ -24433,8 +24444,7 @@ function mostrarOpcionesManualesUbicacion(body) {
     try {
       const ubic = await procesarUbicacionTexto(texto);
       if (ubic) {
-        await guardarUbicacion(APP_STATE.currentLicId, ubic);
-        actualizarBotonUbicacion(ubic);
+        await guardarUbicacionYRefrescar(APP_STATE.currentLicId, ubic);
         renderUbicacionEnModal(body, ubic);
       } else {
         btn.disabled = false;
@@ -24478,8 +24488,7 @@ function mostrarOpcionesManualesUbicacion(body) {
     try {
       const ubic = await procesarUbicacionKmz(file);
       if (ubic) {
-        await guardarUbicacion(APP_STATE.currentLicId, ubic);
-        actualizarBotonUbicacion(ubic);
+        await guardarUbicacionYRefrescar(APP_STATE.currentLicId, ubic);
         renderUbicacionEnModal(body, ubic);
       } else {
         status.innerHTML = '<span style="color:var(--danger);">⚠ No se encontraron coordenadas en el archivo</span>';
@@ -24564,8 +24573,7 @@ function mostrarOpcionesManualesUbicacion(body) {
       };
 
       try {
-        await guardarUbicacion(APP_STATE.currentLicId, ubic);
-        actualizarBotonUbicacion(ubic);
+        await guardarUbicacionYRefrescar(APP_STATE.currentLicId, ubic);
         renderUbicacionEnModal(body, ubic);
       } catch (err) {
         coordsBtn.disabled = false;
@@ -24926,6 +24934,9 @@ function renderUbicacionEnModal(body, ubicacion) {
         <button class="btn-secondary btn-sm" id="verPozosCercanosBtn" title="Ver tabla con los pozos de áridos más cercanos">
           📋 Ver pozos cercanos
         </button>
+        <button class="btn-secondary btn-sm" id="btnMoverUbicacion" title="Mover el pin del proyecto: clic aquí y luego arrastra el pin a la posición correcta">
+          ✋ Mover ubicación
+        </button>
       </div>
       <div class="acard-map-container" id="${mapaId}" style="height:380px;"></div>
       <div class="acard-map-actions">
@@ -24979,6 +24990,15 @@ function renderUbicacionEnModal(body, ubicacion) {
           proyMarker.on('contextmenu', (e) => {
             e.originalEvent.preventDefault();
             activarModoEdicionProyectoEnModal(proyMarker, licActual, map);
+          });
+        }
+        // Botón explícito "Mover ubicación" (más descubrible que el click derecho)
+        const btnMover = document.getElementById('btnMoverUbicacion');
+        if (btnMover && licActual) {
+          btnMover.addEventListener('click', () => {
+            activarModoEdicionProyectoEnModal(proyMarker, licActual, map);
+            proyMarker.openPopup && proyMarker.closePopup();
+            mostrarToast('Arrastra el pin a la posición correcta y suéltalo · ESC para cancelar', { duracion: 5000 });
           });
         }
 
@@ -25088,8 +25108,7 @@ function renderUbicacionEnModal(body, ubicacion) {
         if (data && data.length > 0) {
           ubicacion.lat = parseFloat(data[0].lat);
           ubicacion.lng = parseFloat(data[0].lon);
-          await guardarUbicacion(APP_STATE.currentLicId, ubicacion);
-          actualizarBotonUbicacion(ubicacion);
+          await guardarUbicacionYRefrescar(APP_STATE.currentLicId, ubicacion);
           renderUbicacionEnModal(body, ubicacion);
         } else {
           geocodeBtn.textContent = '⚠ No encontrada';
@@ -25158,6 +25177,7 @@ function renderSeccionSecundarias(cont, ubicacion, body) {
       ubicacion.secundarias.splice(idx, 1);
       await guardarUbicacion(APP_STATE.currentLicId, ubicacion);
       invalidarCachePanel(APP_STATE.currentLicId);
+      try { if (typeof renderPanelLicitaciones === 'function') renderPanelLicitaciones(); } catch(e) {}
       renderSeccionSecundarias(cont, ubicacion, body);
     });
   });
@@ -25219,6 +25239,7 @@ function mostrarFormSecundaria(form, ubicacion, cont, body) {
     ubicacion.secundarias.push(nueva);
     await guardarUbicacion(APP_STATE.currentLicId, ubicacion);
     invalidarCachePanel(APP_STATE.currentLicId);
+    try { if (typeof renderPanelLicitaciones === 'function') renderPanelLicitaciones(); } catch(e) {}
     renderSeccionSecundarias(cont, ubicacion, body);
     mostrarToast('Ubicación secundaria agregada.');
   };
@@ -25287,6 +25308,7 @@ async function extraerYGuardarUbicacion(forzar) {
     await guardarUbicacion(APP_STATE.currentLicId, ubicacion);
     actualizarBotonUbicacion(ubicacion);
     actualizarUsageStats();
+    try { invalidarCachePanel(APP_STATE.currentLicId); } catch(e) {}
   }
   return ubicacion;
 }
