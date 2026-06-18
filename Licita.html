@@ -6354,11 +6354,12 @@
         <h1>📚 Consulta de referencia</h1>
         <p class="count">Material general (Manual de Carreteras, normas) — no asociado a ninguna licitación</p>
       </div>
+      <button id="consultaMenuToggle" title="Ocultar/mostrar menú de temas" style="font-size:12px;padding:7px 12px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;">☰ Menú</button>
     </div>
 
-    <div style="display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start;">
+    <div id="consultaGrid" style="display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start;">
       <!-- Panel de temas -->
-      <div style="background:var(--surface);border:1px solid #D8D4C8;border-radius:14px;padding:14px;box-shadow:0 6px 24px rgba(45,74,58,0.10), 0 1px 3px rgba(0,0,0,0.05);">
+      <div id="consultaTemasPanel" style="background:var(--surface);border:1px solid #D8D4C8;border-radius:14px;padding:14px;box-shadow:0 6px 24px rgba(45,74,58,0.10), 0 1px 3px rgba(0,0,0,0.05);">
         <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-mute);margin-bottom:8px;padding:0 4px;">Temas</div>
         <div id="consultaTemasList" style="display:flex;flex-direction:column;gap:4px;"></div>
         <button class="btn-secondary" id="consultaNuevoTemaBtn" style="margin-top:10px;width:100%;font-size:12px;">+ Nuevo tema</button>
@@ -30012,9 +30013,53 @@ function _comboPintarListaProyectos() {
       if (lab) lab.style.background = cb.checked ? 'var(--accent-lightest)' : 'transparent';
       _comboAplicarResaltado(id);
       _comboActualizarSelInfo();
+      // Al marcar, acercar el mapa al/los punto(s) resaltado(s)
+      if (cb.checked) _comboEncuadrarSeleccion(id);
     };
   });
   _comboActualizarSelInfo();
+}
+
+// Acerca el mapa a los marcadores resaltados. Si se pasa unId, prioriza ese.
+function _comboEncuadrarSeleccion(unId) {
+  if (!_comboMap) return;
+  const latlngs = [];
+  let foco = null;
+  comboSeleccion.forEach(id => {
+    const ref = _comboMarcadores[id];
+    if (ref && ref.marker && ref.marker.getLatLng) {
+      const ll = ref.marker.getLatLng();
+      latlngs.push(ll);
+      if (id === unId) foco = ref;
+    }
+  });
+  if (!latlngs.length) return;
+  const abrirPopupDe = (ref) => {
+    if (!ref || !ref.marker) return;
+    // Si el marcador está dentro de un cluster, acercar y abrir cuando sea visible
+    try {
+      if (_comboMinerasLayer && _comboMinerasLayer.zoomToShowLayer && ref.tipo === 'min') {
+        _comboMinerasLayer.zoomToShowLayer(ref.marker, () => { try { ref.marker.openPopup(); } catch(e){} });
+        return;
+      }
+      if (_comboSeiaLayer && _comboSeiaLayer.zoomToShowLayer && ref.tipo === 'seia') {
+        _comboSeiaLayer.zoomToShowLayer(ref.marker, () => { try { ref.marker.openPopup(); } catch(e){} });
+        return;
+      }
+    } catch(e){}
+    try { ref.marker.openPopup(); } catch(e){}
+  };
+  if (latlngs.length === 1 || foco) {
+    const ll = foco ? foco.marker.getLatLng() : latlngs[0];
+    const zoomObjetivo = Math.max(_comboMap.getZoom(), 11);
+    _comboMap.setView(ll, zoomObjetivo, { animate: true });
+    setTimeout(() => abrirPopupDe(foco || _comboMarcadores[Array.from(comboSeleccion)[0]]), 350);
+  } else {
+    try {
+      const bounds = L.latLngBounds(latlngs);
+      _comboMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 12, animate: true });
+    } catch(e){}
+  }
 }
 
 // Aplica/quita el resaltado a UN marcador según comboSeleccion.
@@ -30571,6 +30616,28 @@ if (_minerasBtn) _minerasBtn.addEventListener('click', () => {
 const _comboBtn = $('comboBtn');
 if (_comboBtn) _comboBtn.addEventListener('click', () => {
   if (_vistaComboActiva) cerrarVistaCombo(); else abrirVistaCombo();
+});
+
+// Ocultar/mostrar el menú lateral de Temas (gana espacio para el contenido)
+const _consultaMenuToggle = $('consultaMenuToggle');
+if (_consultaMenuToggle) _consultaMenuToggle.addEventListener('click', () => {
+  const grid = $('consultaGrid');
+  const panel = $('consultaTemasPanel');
+  if (!grid || !panel) return;
+  const oculto = panel.style.display === 'none';
+  if (oculto) {
+    panel.style.display = '';
+    grid.style.gridTemplateColumns = '240px 1fr';
+    _consultaMenuToggle.style.background = 'var(--surface)';
+  } else {
+    panel.style.display = 'none';
+    grid.style.gridTemplateColumns = '1fr';
+    _consultaMenuToggle.style.background = 'var(--accent-lightest)';
+  }
+  // Si hay un mapa de la vista combinada, reajustar su tamaño
+  if (typeof _comboMap !== 'undefined' && _comboMap) {
+    setTimeout(() => { try { _comboMap.invalidateSize(); } catch(e){} }, 60);
+  }
 });
 
 // --- Respaldo: exportar / importar todo el estado ---
