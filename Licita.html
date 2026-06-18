@@ -29912,6 +29912,8 @@ function _comboPintarMapa() {
 function _comboPintarSeia() {
   if (!_comboMap) return;
   if (_comboSeiaLayer) { try { _comboMap.removeLayer(_comboSeiaLayer); } catch(e){} _comboSeiaLayer = null; }
+  // Limpia referencias SEIA previas SIEMPRE (también si la capa está apagada)
+  Object.keys(_comboMarcadores).forEach(k => { if (k.indexOf('seia:') === 0) delete _comboMarcadores[k]; });
   if (!comboCapaSeia) return;
   const usarCluster = typeof L.markerClusterGroup === 'function';
   const grupo = usarCluster
@@ -29931,8 +29933,6 @@ function _comboPintarSeia() {
         },
       })
     : L.layerGroup();
-  // Limpia referencias SEIA previas
-  Object.keys(_comboMarcadores).forEach(k => { if (k.indexOf('seia:') === 0) delete _comboMarcadores[k]; });
   const haySel = comboSeleccion.size > 0;
   _comboSeiaFiltrados().forEach((p, idx) => {
     const id = 'seia:' + (p.id || idx);
@@ -30049,6 +30049,9 @@ function _comboPintarEtiquetas() {
   Object.keys(_comboMarcadores).forEach(id => {
     const ref = _comboMarcadores[id];
     if (!ref || ref.lat == null || ref.lon == null || !ref.nombre) return;
+    // Respeta los toggles de capa
+    if (ref.tipo === 'seia' && !comboCapaSeia) return;
+    if (ref.tipo === 'min' && !comboCapaMineras) return;
     if (!bounds.contains([ref.lat, ref.lon])) return;
     if (!visibleIndividual(ref)) return; // omitir los que están dentro de un clúster
     const pt = _comboMap.latLngToLayerPoint([ref.lat, ref.lon]);
