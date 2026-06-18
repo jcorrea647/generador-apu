@@ -14190,13 +14190,19 @@ const PARSER_OBRA = {
   motivoDudoso(partida) {
     const u = this._normUnidad(partida.unidad);
     const d = (partida.descripcion || '').toLowerCase();
+    // Excepción: elementos PREFABRICADOS o lineales que contienen "hormigón/concreto"
+    // en su nombre pero se miden legítimamente en metros lineales o unidades.
+    // Ej: "Cajones Prefabricados de Hormigón Armado" (m), "Tubos de Hormigón Simple" (m),
+    // "Soleras" (m), "Barreras de Contención" (m), "Cunetas/Fosos" revestidos (m).
+    // Sin esta excepción, el detector marcaba falsos positivos en estas partidas.
+    const esPrefabricadoLineal = /(prefabricad|caj[oó]n|tubo|tuber[ií]a|solera|barrera|baranda|cuneta|foso|contrafoso|ducto|alcantarilla|baliza|pilote|poste|viga|losa prefabricad)/i.test(d);
     // Familias volumétricas: hormigón, asfalto, relleno, base, enrocado, gavión → NO pueden ser 'm' lineal ni 'un'
     const esVolumetrica = /(hormig[oó]n|asf[aá]ltic|concreto|relleno|enrocad|gavi[oó]n|terrapl[eé]n|base granular|subbase)/i.test(d);
-    if (esVolumetrica && (u === 'm' || u === 'un' || u === 'gl')) {
+    if (esVolumetrica && !esPrefabricadoLineal && (u === 'm' || u === 'un' || u === 'gl')) {
       return `unidad "${partida.unidad}" incoherente para una partida volumétrica (se esperaría m³ o m²)`;
     }
     // Asfalto específicamente: m3 o m2, nunca kg ni m lineal
-    if (/asf[aá]ltic|concreto asf/i.test(d) && !(u === 'm3' || u === 'm2')) {
+    if (/asf[aá]ltic|concreto asf/i.test(d) && !esPrefabricadoLineal && !(u === 'm3' || u === 'm2')) {
       return `unidad "${partida.unidad}" inusual para asfalto (se esperaría m³ o m²)`;
     }
     return null;
