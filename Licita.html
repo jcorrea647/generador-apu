@@ -8060,6 +8060,10 @@ function activarModoEdicionProyecto(marker, lic) {
     await guardarUbicacion(lic.id, ubicNueva);
     invalidarCachePanel(lic.id);
     desactivarModoEdicionProyecto(true);
+    // Borrar la ruta antigua dibujada y cerrar popups: quedaban "pegados" en la
+    // posición vieja porque el re-render no los recalcula automáticamente.
+    try { limpiarRutaDibujada(); } catch(e) {}
+    try { if (window.__licMapInstance) window.__licMapInstance.closePopup(); } catch(e) {}
     // Refrescar mapa del panel (re-render para que tome las nuevas coords)
     try { if (typeof renderPanelLicitaciones === 'function') renderPanelLicitaciones(); } catch(e) {}
     mostrarToast('Proyecto reubicado', {
@@ -8067,6 +8071,8 @@ function activarModoEdicionProyecto(marker, lic) {
         if (latVieja != null && lngVieja != null) {
           await guardarUbicacion(lic.id, { ...ubicActual, lat: latVieja, lng: lngVieja });
           invalidarCachePanel(lic.id);
+          try { limpiarRutaDibujada(); } catch(e) {}
+          try { if (window.__licMapInstance) window.__licMapInstance.closePopup(); } catch(e) {}
           try { if (typeof renderPanelLicitaciones === 'function') renderPanelLicitaciones(); } catch(e) {}
         }
       }
@@ -8125,6 +8131,8 @@ function activarModoEdicionProyectoEnModal(marker, lic, map) {
     invalidarCachePanel(lic.id);
     actualizarBotonUbicacion(ubicNueva);
     desactivarModoEdicionProyectoModal();
+    try { limpiarRutaDibujada(); } catch(e) {}
+    try { if (window.__licMapInstance) window.__licMapInstance.closePopup(); } catch(e) {}
     // Refrescar panel para que el pin en el panel también se mueva
     try { if (typeof renderPanelLicitaciones === 'function') renderPanelLicitaciones(); } catch(e) {}
     mostrarToast('Proyecto reubicado', {
