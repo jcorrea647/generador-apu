@@ -9238,7 +9238,7 @@ function _redibujarMedicion() {
 let __medirSeq = 0;
 async function _recalcularMedicion() {
   const pts = __medir.puntos;
-  // Distancia recta acumulada
+  // Distancia recta acumulada (cálculo LOCAL, instantáneo)
   let recta = 0;
   for (let i = 1; i < pts.length; i++) {
     recta += distanciaHaversineKm(pts[i-1].lat, pts[i-1].lon, pts[i].lat, pts[i].lon);
@@ -9246,17 +9246,46 @@ async function _recalcularMedicion() {
   _actualizarPanelMedicion({ recta, ruta: null, calculando: pts.length >= 2 });
   if (pts.length < 2) return;
 
-  // Distancia por ruta (OSRM) — sumando tramos, con caché
+  // Distancia por ruta (OSRM) — todos los tramos EN PARALELO (no secuencial),
+  // para que no se acumulen los tiempos de espera. Cada tramo trae su geometría.
   const seq = ++__medirSeq;
-  let rutaKm = 0, rutaMin = 0, ok = true;
-  for (let i = 1; i < pts.length; i++) {
-    const r = await obtenerRutaOSRM(pts[i-1].lat, pts[i-1].lon, pts[i].lat, pts[i].lon);
-    if (seq !== __medirSeq) return; // se agregó otro punto mientras tanto
-    if (r) { rutaKm += r.km; rutaMin += r.minutos; }
-    else { ok = false; }
+  const tramos = [];
+  for (let i = 1; i < pts.length; i++) tramos.push([pts[i-1], pts[i]]);
+  let resultados;
+  try {
+    resultados = await Promise.all(
+      tramos.map(([a, b]) => obtenerRutaOSRM(a.lat, a.lon, b.lat, b.lon))
+    );
+  } catch (e) {
+    resultados = tramos.map(() => null);
   }
-  // Dibujar la ruta real (geometría) del último tramo completo si disponible
+  if (seq !== __medirSeq) return; // se agregó/quitó un punto mientras tanto
+
+  let rutaKm = 0, rutaMin = 0, ok = true;
+  const geomTotal = [];
+  for (const r of resultados) {
+    if (r) {
+      rutaKm += r.km; rutaMin += r.minutos;
+      if (Array.isArray(r.geometry)) geomTotal.push(...r.geometry);
+    } else {
+      ok = false;
+    }
+  }
+  // Dibujar la línea de ruta real (verde) sobre el mapa
+  _dibujarLineaRuta(ok && geomTotal.length >= 2 ? geomTotal : null);
   _actualizarPanelMedicion({ recta, ruta: ok ? { km: rutaKm, min: rutaMin } : 'error', calculando: false });
+}
+
+// Dibuja (o borra) la polilínea de la RUTA real por carretera.
+function _dibujarLineaRuta(geometry) {
+  if (__medir.lineaRuta) { __medir.lineaRuta.remove(); __medir.lineaRuta = null; }
+  if (!geometry || !__medir.map) return;
+  // Halo blanco + línea verde para contraste sobre satélite
+  const grupo = L.layerGroup();
+  L.polyline(geometry, { color: '#FFFFFF', weight: 6, opacity: 0.85, lineJoin: 'round' }).addTo(grupo);
+  L.polyline(geometry, { color: '#2C5641', weight: 3.5, opacity: 0.95, lineJoin: 'round' }).addTo(grupo);
+  grupo.addTo(__medir.map);
+  __medir.lineaRuta = grupo;
 }
 
 function _crearPanelMedicion() {
@@ -9300,6 +9329,7 @@ function _actualizarPanelMedicion(data) {
   html += '<div class="medir-row"><span>📐 Línea recta</span><strong>' + formatDistanciaKm(data.recta) + '</strong></div>';
   if (data.calculando) {
     html += '<div class="medir-row"><span>🛣️ Por ruta</span><strong>calculando…</strong></div>';
+    html += '<div class="medir-hint">La línea recta ya está lista. La ruta por carretera puede tardar unos segundos (servidor OSRM público).</div>';
   } else if (data.ruta === 'error' || data.ruta == null) {
     html += '<div class="medir-row"><span>🛣️ Por ruta</span><strong>no disponible</strong></div>';
     html += '<div class="medir-hint">No se pudo calcular la ruta (sin cobertura de carretera o sin conexión). La línea recta sí es válida.</div>';
