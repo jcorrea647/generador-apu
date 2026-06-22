@@ -12121,8 +12121,15 @@ async function enviarMensaje() {
   // Recuperar fragmentos relevantes (local, sin costo)
   // topK puntual subido a 15 para no dejar fuera datos que quedan en posiciones medias
   // (ej. una respuesta a consulta específica como la Pregunta 111).
-  const topK = chatState.ragMode === 'amplio' ? 25 : 15;
+  const topK = chatState.ragMode === 'amplio' ? 25 : 20;
   const info = await RAG.construir();
+  // Sumar los análisis ya generados como fuente extra del índice, para que el chat
+  // no "pierda" datos que un análisis sí extrajo (ej. equipos en una tabla).
+  try {
+    if (typeof APP_STATE !== 'undefined' && APP_STATE.currentLicId) {
+      await RAG.indexarAnalisis(APP_STATE.currentLicId);
+    }
+  } catch (e) { console.warn('[chat] no se pudieron indexar los análisis:', e.message); }
   // Expandir la pregunta con términos técnicos equivalentes antes de buscar:
   // BM25 es coincidencia léxica, así que "modalidad 7×7" debe enriquecerse con
   // "régimen de turnos jornada excepcional sistema de trabajo..." para hallar el fragmento.
@@ -33890,6 +33897,10 @@ const RAG = {
     visita: ['terreno', 'obligatoria'],
     propuesta: ['oferta', 'tecnica', 'economica'],
     pavimento: ['pavimentos', 'asfalto', 'carpeta'],
+    silo: ['silos', 'tolva', 'almacenamiento', 'transferencia', 'planta'],
+    maquinaria: ['equipo', 'equipos', 'flota', 'maquina', 'maquinas'],
+    equipo: ['maquinaria', 'equipos', 'flota'],
+    transferencia: ['silo', 'ctc', 'carga', 'traspaso'],
   },
 
   // Expande la lista de términos de la consulta agregando sinónimos de dominio.
@@ -34124,6 +34135,94 @@ const RAG = {
     return { yaEstaba: false, chunks: N, docs: docsMd.length };
   },
 
+  // --- Añadir los ANÁLISIS YA GENERADOS como fuente extra del índice ---
+  // El chat general suele "perder" datos que un análisis (ej. "Resume bases técnicas")
+  // sí extrajo, porque la pregunta del usuario no matchea léxicamente el fragmento crudo
+  // del documento. Aquí inyectamos el texto de los análisis generados como chunks
+  // adicionales del índice BM25, de modo que un dato ya extraído por un análisis
+  // (ej. "Silo móvil de transferencia") sea recuperable desde el chat.
+  // Es aditivo: se llama DESPUÉS de construir() y recalcula IDF/avgLen con todo incluido.
+  async indexarAnalisis(licId) {
+    if (!this.indexado) return { yaEstaba: true, analisis: 0 };
+    if (!licId || typeof dbGetAllAnalisisDeLicitacion !== 'function') {
+      return { yaEstaba: true, analisis: 0 };
+    }
+    let porAnalisis = {};
+    try { porAnalisis = await dbGetAllAnalisisDeLicitacion(licId); } catch (e) { return { yaEstaba: true, analisis: 0 }; }
+
+    // Huella de análisis: ids + nº de versiones + largo de la última versión.
+    const partes = [];
+    for (const aId in porAnalisis) {
+      const vers = porAnalisis[aId] || [];
+      const ult = vers[vers.length - 1];
+      const md = (ult && (ult.markdown || ult.texto || ult.contenido)) || '';
+      partes.push(`${aId}:${vers.length}:${md.length}`);
+    }
+    const huellaAnalisis = partes.sort().join('|');
+    if (this._huellaAnalisis === huellaAnalisis && this._huellaBaseAlIndexarAnalisis === this.docIdsIndexados) {
+      return { yaEstaba: true, analisis: this._nAnalisisChunks || 0 };
+    }
+
+    // Quitar chunks de análisis previos (si los hubiera) para no duplicar.
+    this.chunks = this.chunks.filter(c => !c.esAnalisis);
+
+    let nuevos = 0;
+    for (const aId in porAnalisis) {
+      const vers = porAnalisis[aId] || [];
+      const ult = vers[vers.length - 1];
+      if (!ult) continue;
+      const md = (ult.markdown || ult.texto || ult.contenido || '').trim();
+      if (!md) continue;
+      const titulo = ult.titulo || aId;
+      const limpio = this._limpiarHtml(md);
+      const trozos = this._trocear(limpio, `analisis_${aId}`, `Análisis: ${titulo}`);
+      for (const t of trozos) {
+        const textoLimpio = t.texto.trim();
+        if (!textoLimpio) continue;
+        this.chunks.push({
+          id: this.chunks.length,
+          docId: `analisis_${aId}`,
+          docName: `Análisis ya generado: ${titulo}`,
+          titulo: t.titulo,
+          texto: textoLimpio,
+          esAnalisis: true,
+          tokens: Math.ceil(textoLimpio.length / 4),
+          _terms: this._tokenizar(t.titulo + ' ' + textoLimpio),
+        });
+        nuevos++;
+      }
+    }
+
+    // Recalcular IDF, avgLen y tf con TODO el conjunto (docs + análisis).
+    const N = this.chunks.length;
+    const df = {};
+    let totalLen = 0;
+    // Reconstruir _terms para chunks de documentos (se borró tras el primer índice).
+    for (const c of this.chunks) {
+      if (!c._terms) c._terms = this._tokenizar((c.titulo || '') + ' ' + (c.texto || ''));
+      totalLen += c._terms.length;
+      const vistos = new Set(c._terms);
+      for (const t of vistos) df[t] = (df[t] || 0) + 1;
+    }
+    this.avgLen = N ? totalLen / N : 0;
+    this.idf = {};
+    for (const t in df) {
+      this.idf[t] = Math.log(1 + (N - df[t] + 0.5) / (df[t] + 0.5));
+    }
+    for (const c of this.chunks) {
+      const tf = {};
+      for (const t of c._terms) tf[t] = (tf[t] || 0) + 1;
+      c._tf = tf;
+      c._len = c._terms.length;
+      delete c._terms;
+    }
+
+    this._huellaAnalisis = huellaAnalisis;
+    this._huellaBaseAlIndexarAnalisis = this.docIdsIndexados;
+    this._nAnalisisChunks = nuevos;
+    return { yaEstaba: false, analisis: nuevos };
+  },
+
   // --- Buscar: devuelve los topK chunks más relevantes a la consulta ---
   // Aplica un realce (boost) a los fragmentos que provienen de documentos de
   // respuestas/aclaraciones/circulares, porque por jerarquía documental esos
@@ -34151,6 +34250,9 @@ const RAG = {
       if (score > 0) {
         // Realce por jerarquía documental (nombre del documento de origen)
         if (RE_PRIORIDAD.test(c.docName || '')) score *= BOOST_PRIORIDAD;
+        // Realce moderado a los análisis ya generados: consolidan datos que
+        // el chat suele perder, pero deben pesar menos que las aclaraciones.
+        if (c.esAnalisis) score *= 1.2;
         resultados.push({ chunk: c, score });
       }
     }
