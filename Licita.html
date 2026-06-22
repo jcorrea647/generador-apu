@@ -12862,7 +12862,10 @@ Responde en **markdown** con esta estructura EXACTA:
 
 ## Resumen del presupuesto oficial
 
-3-5 oraciones que enmarquen: monto total oficial (con su moneda), si está expresado neto o con IVA, número aproximado de partidas o ítems, y la estructura de costos más relevante (ej: si separa costo directo, gastos generales y utilidad, o si viene como suma de partidas a precios unitarios). Cita el documento y sección de donde proviene.
+3-5 oraciones que enmarquen el o los montos disponibles. Distingue desde el inicio entre:
+- un **presupuesto estimado / referencial global** (una sola cifra total, ej. el campo "PRESUPUESTO ESTIMADO" de la minuta o ficha de licitación), y
+- un **presupuesto oficial desglosado** (itemizado / cuadro de precios con partidas y montos).
+Indica cuál de los dos encontraste (puede ser uno, otro, ambos o ninguno), el monto con su moneda, si está neto o con IVA, el número aproximado de partidas si hay desglose, y la estructura de costos relevante. **NUNCA reportes "no se encuentra el presupuesto" si en los documentos aparece un monto estimado/referencial global: ese monto SÍ es información de presupuesto y debe entregarse**, aclarando que es estimado y no un desglose por partidas. Cita el documento y sección de donde proviene.
 
 **Documento fuente:** [nombre del documento, sección/anexo, página si aplica]
 
@@ -12898,23 +12901,25 @@ Reglas para llenar:
 
 ## Distinción de montos (OBLIGATORIA)
 
-En las licitaciones MOP suelen aparecer DOS cifras grandes que se confunden fácilmente. SIEMPRE debes distinguirlas explícitamente, aunque solo encuentres una:
+En las licitaciones MOP suelen aparecer cifras grandes que se confunden fácilmente. SIEMPRE debes distinguirlas explícitamente, aunque solo encuentres una:
 
-1. **Presupuesto oficial / referencial de la obra:** es el valor estimado del contrato. Aparece en el itemizado / cuadro de precios oficial / planilla de presupuesto, normalmente como "TOTAL GENERAL", "PRESUPUESTO", "TOTAL", "Subtotal vial + IVA + proforma" o similar. **Este es el único monto que debe usarse como presupuesto oficial/referencial.**
+1. **Presupuesto estimado / referencial global:** una ÚNICA cifra total, sin desglose por partidas, que el mandante publica como valor estimado de la obra. Aparece típicamente en la **minuta / ficha de licitación** bajo campos como "PRESUPUESTO ESTIMADO", "PRESUPUESTO REFERENCIAL" o "MONTO ESTIMADO", a menudo con la aclaración "(IVA incluido)". Es información de presupuesto válida y útil para el proponente, aunque NO sea el desglose. Si la encuentras, repórtala SIEMPRE.
 
-2. **Montos por especialidad del Registro (RCOP):** es una tabla con columnas tipo "ESPECIALIDAD / SIGLA / DENOMINACIÓN / MONTO S/IVA / UTM / CATEGORÍA" (ej: "Pavimentos", "Obras de Movimiento de Tierra"). Estos montos definen QUÉ CATEGORÍA de contratista puede participar (inscripción en el registro). **NO son el presupuesto de la obra y NO deben sumarse ni usarse como presupuesto.** Sumar las especialidades da una cifra mayor que el presupuesto real y es un error frecuente.
+2. **Presupuesto oficial desglosado:** el itemizado / cuadro de precios oficial / planilla de presupuesto, con partidas y montos por partida. Normalmente totaliza como "TOTAL GENERAL", "PRESUPUESTO", "Subtotal vial + IVA + proforma" o similar. Es el detalle, no solo la cifra global.
+
+3. **Montos por especialidad del Registro (RCOP):** una tabla con columnas tipo "ESPECIALIDAD / SIGLA / DENOMINACIÓN / MONTO S/IVA / UTM / CATEGORÍA" (ej: "Pavimentos", "Obras de Movimiento de Tierra"). Estos montos definen QUÉ CATEGORÍA de contratista puede participar (inscripción en el registro). **NO son el presupuesto de la obra y NO deben sumarse ni usarse como presupuesto.** Sumar las especialidades da una cifra mayor que el presupuesto real y es un error frecuente.
 
 Incluye SIEMPRE esta sección con el siguiente formato:
 
-**Monto a usar como presupuesto oficial/referencial:** $... [fuente: documento, página]
+**Monto a usar como presupuesto oficial/referencial:** $... [fuente: documento, página] — indica si proviene del estimado global o del desglose oficial.
 
-**Por qué pueden diferir de otras cifras del documento:** explica en 2-4 oraciones la diferencia entre el presupuesto de la obra y los montos por especialidad RCOP (si ambos aparecen). Si las cifras difieren por IVA, por inclusión/exclusión de la proforma, o porque una es la suma de topes de categoría y la otra el valor real del contrato, dilo explícitamente.
+**Por qué pueden diferir de otras cifras del documento:** explica en 2-4 oraciones la diferencia entre las cifras que aparezcan (estimado global vs. desglose oficial vs. topes RCOP). Si difieren por IVA, por inclusión/exclusión de la proforma, o porque una es la suma de topes de categoría y la otra el valor real del contrato, dilo explícitamente.
 
 | Cifra encontrada | Monto | Qué es | ¿Es el presupuesto? |
 |------------------|-------|--------|---------------------|
-| ... | $... | (presupuesto obra / especialidad RCOP / subtotal / etc.) | Sí / No |
+| ... | $... | (estimado/referencial global / presupuesto obra desglosado / especialidad RCOP / subtotal / etc.) | Sí / No |
 
-Si solo encuentras una de las dos cifras, deja la otra fila fuera pero menciona en el texto que no apareció.
+Si solo encuentras una de las cifras, deja las otras filas fuera pero menciona en el texto que no aparecieron.
 
 ## Notas
 
@@ -12922,7 +12927,7 @@ Si solo encuentras una de las dos cifras, deja la otra fila fuera pero menciona 
 - Si hay más de un documento de presupuesto cargado, indica cuál usaste y por qué.
 - Cita textualmente (entre comillas) cualquier cláusula ambigua sobre el carácter del presupuesto.
 
-Si NO encuentras un presupuesto oficial con montos en los documentos, dilo claramente en el Resumen y no inventes tablas.`,
+Si NO encuentras un presupuesto oficial DESGLOSADO por partidas, no inventes la tabla de partidas: omítela e indícalo. Pero si existe un presupuesto estimado/referencial global (cifra única), DEBES reportarlo en el Resumen y en la sección de Distinción de montos. Solo responde que no hay información de presupuesto cuando no aparezca NINGUNA cifra (ni estimada ni desglosada).`,
   },
   {
     id: 'costeo-directo',
@@ -33868,8 +33873,11 @@ const RAG = {
   // términos coloquiales a los términos reales con que el dato aparece escrito.
   // Se aplica SIEMPRE y de forma local (no depende de la IA), como red de seguridad.
   _SINONIMOS_DOMINIO: {
-    presupuesto: ['monto', 'especialidad', 'estimado', 'oficial', 'valor', 'costo', 'cd', 'directo'],
-    monto: ['presupuesto', 'valor', 'especialidad'],
+    presupuesto: ['monto', 'especialidad', 'estimado', 'referencial', 'oficial', 'valor', 'costo', 'cd', 'directo'],
+    estimado: ['presupuesto', 'referencial', 'monto', 'valor'],
+    referencial: ['presupuesto', 'estimado', 'monto', 'valor'],
+    oficial: ['presupuesto', 'mandante'],
+    monto: ['presupuesto', 'valor', 'especialidad', 'estimado'],
     plazo: ['dias', 'corridos', 'ejecucion', 'vigencia', 'duracion'],
     garantia: ['boleta', 'caucion', 'fiel', 'cumplimiento', 'seriedad', 'poliza'],
     seriedad: ['garantia', 'boleta', 'oferta'],
