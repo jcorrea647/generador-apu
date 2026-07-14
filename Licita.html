@@ -20122,6 +20122,8 @@ async function guardarMetodologiaActual() {
       resultados: METODOLOGIA_STATE.resultados,
       conversaciones: METODOLOGIA_STATE.conversaciones,
       faseRevision: METODOLOGIA_STATE.faseRevision,
+      estructuraSugeridaIA: METODOLOGIA_STATE.estructuraSugeridaIA,
+      estructuraSugeridaIAAt: METODOLOGIA_STATE.estructuraSugeridaIAAt,
       guardadoEn: Date.now(),
     };
     await dbPut(record);
@@ -20153,6 +20155,8 @@ async function cargarMetodologiaDeLicitacion(licId) {
   METODOLOGIA_STATE.faseRevision = false;
   METODOLOGIA_STATE.iterandoSeccion = null;
   METODOLOGIA_STATE.expandidas = {};
+  METODOLOGIA_STATE.estructuraSugeridaIA = false;
+  METODOLOGIA_STATE.estructuraSugeridaIAAt = null;
 
   if (!licId) return false;
   try {
@@ -20165,6 +20169,8 @@ async function cargarMetodologiaDeLicitacion(licId) {
     if (rec.resultados && typeof rec.resultados === 'object') METODOLOGIA_STATE.resultados = rec.resultados;
     if (rec.conversaciones && typeof rec.conversaciones === 'object') METODOLOGIA_STATE.conversaciones = rec.conversaciones;
     METODOLOGIA_STATE.faseRevision = !!rec.faseRevision;
+    METODOLOGIA_STATE.estructuraSugeridaIA = !!rec.estructuraSugeridaIA;
+    METODOLOGIA_STATE.estructuraSugeridaIAAt = rec.estructuraSugeridaIAAt || null;
     // ¿Hay al menos una sección con contenido generado?
     const hayContenido = Object.keys(METODOLOGIA_STATE.contenidos).some(
       k => METODOLOGIA_STATE.contenidos[k] && String(METODOLOGIA_STATE.contenidos[k]).trim() !== ''
@@ -20508,7 +20514,11 @@ function renderPaso2Estructura(body) {
 
     <div class="met-estructura-lista">${empresaCard}${seccionesHtml}</div>
 
-    <button id="metAddSecBtn" class="btn-secondary btn-sm" style="margin-top:14px;">+ Agregar sección</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px;">
+      <button id="metAddSecBtn" class="btn-secondary btn-sm">+ Agregar sección</button>
+      <button id="metSugerirEstructuraBtn" class="btn-sm" title="Lee las bases técnicas cargadas y propone un índice de metodología adaptado al tipo de servicio de esta licitación. Conserva tu trabajo por coincidencia de nombre." style="font-size:12px;padding:6px 12px;border:1px solid #047857;border-radius:7px;background:#ECFDF5;color:#047857;font-weight:600;cursor:pointer;font-family:inherit;">⚡ Sugerir estructura según las bases</button>
+      ${METODOLOGIA_STATE.estructuraSugeridaIA ? '<span style="font-size:11px;padding:4px 9px;border-radius:99px;background:#ECFDF5;color:#047857;border:1px solid #A7F3D0;font-weight:600;white-space:nowrap;">⚡ Estructura sugerida desde las bases</span>' : ''}
+    </div>
 
     <div style="margin-top:14px; padding:10px 12px; background:var(--surface-warm); border-radius:8px; font-size:11.5px; color:var(--text-soft);">
       <strong style="color:var(--accent);">Resumen:</strong> ${totalActivas} de ${est.length} secciones activas.
@@ -20606,6 +20616,11 @@ function renderPaso2Estructura(body) {
     METODOLOGIA_STATE.expandidas[nueva.id] = true;
     renderPaso2Estructura(body);
   });
+  // Sugerir estructura según las bases (IA)
+  const sugBtn = body.querySelector('#metSugerirEstructuraBtn');
+  if (sugBtn) {
+    sugBtn.addEventListener('click', () => sugerirEstructuraMetodologia(body));
+  }
   // Agregar subsección
   body.querySelectorAll('[data-add-sub]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -22109,6 +22124,292 @@ async function iniciarGeneracionMetodologia() {
   // Persistir todo lo generado para que sobreviva a recargas/cierres
   await guardarMetodologiaActual();
   renderModalMetodologia();
+}
+
+// ============================================================================
+// === SUGERIR ESTRUCTURA DE METODOLOGÍA SEGÚN LAS BASES DE LA LICITACIÓN ===
+// ============================================================================
+// Lee las BBTT/bases cargadas y propone un índice de metodología adaptado al
+// TIPO DE SERVICIO real (no un genérico de obra civil). Genera secciones +
+// subsecciones + instrucción-guía por sección. Reemplaza la estructura actual
+// preservando adjuntos/contenido/instrucciones por coincidencia de nombre.
+
+// Similitud de labels para el fuzzy-merge (sin tildes, ignora numeración romana/arábiga de índice)
+function metNormLabel(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/^\s*[ivxlcdm]+\s*[.\-)]\s*/i, ' ')   // quita "III." al inicio
+    .replace(/^\s*\d+\s*[.\-)]\s*/, ' ')            // quita "3." al inicio
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+function metSimilitud(a, b) {
+  const sa = new Set(metNormLabel(a).split(' ').filter(w => w.length > 2));
+  const sb = new Set(metNormLabel(b).split(' ').filter(w => w.length > 2));
+  if (sa.size === 0 || sb.size === 0) return 0;
+  let inter = 0;
+  for (const w of sa) if (sb.has(w)) inter++;
+  return inter / Math.max(sa.size, sb.size);
+}
+
+// Extrae el primer array JSON de un texto (reutiliza lógica robusta)
+function metExtraerJSON(texto) {
+  if (!texto) return null;
+  let t = String(texto).trim().replace(/```json/gi, '').replace(/```/g, '').trim();
+  const ini = t.indexOf('['), fin = t.lastIndexOf(']');
+  if (ini === -1 || fin === -1 || fin <= ini) return null;
+  const frag = t.slice(ini, fin + 1);
+  try { return JSON.parse(frag); }
+  catch (e) { try { return JSON.parse(frag.replace(/,\s*([\]}])/g, '$1')); } catch (e2) { return null; } }
+}
+
+// Valida y normaliza la estructura sugerida por IA a la forma de METODOLOGIA_STATE.estructura
+function metValidarEstructuraIA(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const ICONOS_FALLBACK = ['📄','🎯','📅','🏗️','🏭','👷','🛡️','✅','📈','🌱','🔧','🚛'];
+  const out = [];
+  arr.forEach((sec, i) => {
+    if (!sec || typeof sec !== 'object') return;
+    const label = String(sec.label || sec.titulo || '').trim();
+    if (!label) return;
+    const nodo = {
+      id: _metNewId('sec'),
+      label,
+      icon: (typeof sec.icon === 'string' && sec.icon.trim()) ? sec.icon.trim() : ICONOS_FALLBACK[i % ICONOS_FALLBACK.length],
+      activa: true,
+      instruccion: String(sec.instruccion || '').trim(),
+      subsecciones: [],
+    };
+    if (Array.isArray(sec.subsecciones)) {
+      for (const sub of sec.subsecciones) {
+        if (!sub) continue;
+        const subLabel = String(typeof sub === 'string' ? sub : (sub.label || '')).trim();
+        if (!subLabel) continue;
+        nodo.subsecciones.push({
+          id: _metNewId('sub'),
+          label: subLabel,
+          archivos: [], docRefs: [],
+          modoContexto: 'bases_y_archivos',
+          instruccion: String((typeof sub === 'object' && sub.instruccion) || '').trim(),
+        });
+      }
+    }
+    out.push(nodo);
+  });
+  return out.length > 0 ? out : null;
+}
+
+// Preserva de la estructura vieja: adjuntos, docRefs, modoContexto, instrucción y contenido/conversación generados,
+// mapeando por coincidencia de label (fuzzy). No destruye trabajo del usuario.
+function metMergeEstructura(estructuraNueva, estructuraVieja, estado) {
+  const contenidosViejos = estado.contenidos || {};
+  const conversacionesViejas = estado.conversaciones || {};
+  const resultadosViejos = estado.resultados || {};
+  const nuevoContenidos = {}, nuevoConversaciones = {}, nuevoResultados = {};
+
+  const secViejasUsadas = new Set();
+
+  for (const secN of estructuraNueva) {
+    // Match de sección por label fuzzy
+    let mejorSec = null, mejorSim = 0, mejorIdx = -1;
+    estructuraVieja.forEach((secV, idx) => {
+      if (secViejasUsadas.has(idx)) return;
+      const sim = metSimilitud(secN.label, secV.label);
+      if (sim > mejorSim) { mejorSim = sim; mejorSec = secV; mejorIdx = idx; }
+    });
+
+    if (mejorSec && mejorSim >= 0.5) {
+      secViejasUsadas.add(mejorIdx);
+      // Heredar contenido generado / conversación / resultado (por el id NUEVO)
+      if (contenidosViejos[mejorSec.id] !== undefined) nuevoContenidos[secN.id] = contenidosViejos[mejorSec.id];
+      if (conversacionesViejas[mejorSec.id] !== undefined) nuevoConversaciones[secN.id] = conversacionesViejas[mejorSec.id];
+      if (resultadosViejos[mejorSec.id] !== undefined) nuevoResultados[secN.id] = resultadosViejos[mejorSec.id];
+      // Si la vieja tenía instrucción y la nueva no trae, conservarla
+      if ((!secN.instruccion || !secN.instruccion.trim()) && mejorSec.instruccion) secN.instruccion = mejorSec.instruccion;
+
+      // Merge de subsecciones (preservar archivos/docRefs/modo/instrucción por fuzzy)
+      const subsViejasUsadas = new Set();
+      for (const subN of secN.subsecciones) {
+        let mejorSub = null, mejorSubSim = 0, mejorSubIdx = -1;
+        (mejorSec.subsecciones || []).forEach((subV, j) => {
+          if (subsViejasUsadas.has(j)) return;
+          const sim = metSimilitud(subN.label, subV.label);
+          if (sim > mejorSubSim) { mejorSubSim = sim; mejorSub = subV; mejorSubIdx = j; }
+        });
+        if (mejorSub && mejorSubSim >= 0.5) {
+          subsViejasUsadas.add(mejorSubIdx);
+          if (Array.isArray(mejorSub.archivos) && mejorSub.archivos.length) subN.archivos = mejorSub.archivos;
+          if (Array.isArray(mejorSub.docRefs) && mejorSub.docRefs.length) subN.docRefs = mejorSub.docRefs;
+          if (mejorSub.modoContexto) subN.modoContexto = mejorSub.modoContexto;
+          if ((!subN.instruccion || !subN.instruccion.trim()) && mejorSub.instruccion) subN.instruccion = mejorSub.instruccion;
+        }
+      }
+      // Subsecciones viejas con archivos que no matchearon con ninguna nueva: NO perderlas → adjuntarlas
+      (mejorSec.subsecciones || []).forEach((subV, j) => {
+        if (subsViejasUsadas.has(j)) return;
+        const tieneTrabajo = (subV.archivos && subV.archivos.length) || (subV.docRefs && subV.docRefs.length) || (subV.instruccion && subV.instruccion.trim());
+        if (tieneTrabajo) {
+          secN.subsecciones.push({
+            id: _metNewId('sub'),
+            label: subV.label,
+            archivos: subV.archivos || [], docRefs: subV.docRefs || [],
+            modoContexto: subV.modoContexto || 'bases_y_archivos',
+            instruccion: subV.instruccion || '',
+          });
+        }
+      });
+    }
+  }
+
+  // Secciones viejas con contenido generado que NO matchearon con ninguna nueva:
+  // conservarlas al final para no perder trabajo (el usuario decide si borrarlas).
+  estructuraVieja.forEach((secV, idx) => {
+    if (secViejasUsadas.has(idx)) return;
+    const tieneTrabajo = contenidosViejos[secV.id] || (secV.subsecciones && secV.subsecciones.some(s => (s.archivos||[]).length || (s.docRefs||[]).length));
+    if (tieneTrabajo) {
+      const clon = {
+        id: _metNewId('sec'),
+        label: secV.label + ' (previa)',
+        icon: secV.icon || '📄',
+        activa: secV.activa !== false,
+        instruccion: secV.instruccion || '',
+        subsecciones: (secV.subsecciones || []).map(s => ({
+          id: _metNewId('sub'), label: s.label, archivos: s.archivos || [], docRefs: s.docRefs || [],
+          modoContexto: s.modoContexto || 'bases_y_archivos', instruccion: s.instruccion || '',
+        })),
+      };
+      estructuraNueva.push(clon);
+      if (contenidosViejos[secV.id] !== undefined) nuevoContenidos[clon.id] = contenidosViejos[secV.id];
+      if (conversacionesViejas[secV.id] !== undefined) nuevoConversaciones[clon.id] = conversacionesViejas[secV.id];
+      if (resultadosViejos[secV.id] !== undefined) nuevoResultados[clon.id] = resultadosViejos[secV.id];
+    }
+  });
+
+  return { contenidos: nuevoContenidos, conversaciones: nuevoConversaciones, resultados: nuevoResultados };
+}
+
+let metSugiriendoEstructura = false;
+
+async function sugerirEstructuraMetodologia(body) {
+  if (metSugiriendoEstructura) return;
+
+  if (!chatState.apiKey && !chatState.googleApiKey) {
+    alert('⚠ Configura una API key (Claude o Gemini) en el botón de configuración para usar esta función.');
+    return;
+  }
+  const docsValidos = (state.docs || []).filter(d => !d.skipped && d.blob);
+  if (docsValidos.length === 0) {
+    alert('⚠ No hay documentos cargados en esta licitación. Sube las bases técnicas en la sección de Documentos antes de sugerir la estructura.');
+    return;
+  }
+
+  const hayTrabajo = Object.keys(METODOLOGIA_STATE.contenidos || {}).length > 0 ||
+    (METODOLOGIA_STATE.estructura || []).some(s => (s.subsecciones || []).some(sub => (sub.archivos || []).length || (sub.docRefs || []).length));
+  const msg = 'Se propondrá una estructura de metodología adaptada al tipo de servicio de esta licitación, leyendo las bases técnicas cargadas.\n\n' +
+    (hayTrabajo
+      ? 'Se reemplazará la estructura actual, PERO se intentará conservar tus subsecciones con archivos, instrucciones y contenido ya generado (por coincidencia de nombre). Lo que no calce se preserva al final marcado como "(previa)".\n\n'
+      : 'Se reemplazará la estructura genérica actual.\n\n') +
+    'Esto consume una llamada a la IA (Gemini Pro). ¿Continuar?';
+  if (!confirm(msg)) return;
+
+  metSugiriendoEstructura = true;
+  const btn = document.getElementById('metSugerirEstructuraBtn');
+  const labelOrig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Analizando bases…'; btn.style.opacity = '0.7'; }
+
+  const modeloPrevio = chatState.currentModel;
+  const usarPro = !!MODELS['gemini-pro'] && !!chatState.googleApiKey;
+  if (usarPro) chatState.currentModel = 'gemini-pro';
+
+  try {
+    const docIds = docsValidos.map(d => d.id);
+    const listaDocs = docsValidos
+      .map(d => '- "' + (d.name || 'documento') + '"' + (d.tag ? ' [' + d.tag + ']' : ' [sin etiqueta]'))
+      .join('\n');
+    const contexto = await prepararContextoBases(docIds);
+
+    const systemPrompt =
+      'Eres un experto en propuestas técnicas para licitaciones de construcción, servicios e infraestructura en Chile (MOP, minería, privados). ' +
+      'Tu tarea es PROPONER EL ÍNDICE (estructura de secciones) de la Metodología / Propuesta Técnica que la empresa presentará, ADAPTADO AL TIPO DE SERVICIO REAL de esta licitación.\n\n' +
+      'PRINCIPIO CLAVE — ADAPTAR AL SERVICIO, NO GENÉRICO:\n' +
+      'Primero identifica qué tipo de trabajo pide esta licitación leyendo las bases técnicas (puede ser construcción de obra civil, pero también un SERVICIO como extracción/carguío/transporte de material, mantención, operación, movimiento de tierra, sondajes, etc.). La estructura debe reflejar ESE servicio. Ejemplos: si el servicio es "venta, extracción y transporte de escorias", NO uses "Metodología de Construcción" ni "Instalación de Faenas" como si fuera obra civil — usa secciones propias del servicio (ej. Extracción/Carguío, Transporte y Logística, Punto de Descarga/Disposición, Equipos y Flota, etc.). Sé fiel al alcance descrito en las bases.\n\n' +
+      'QUÉ CONTIENE LA ESTRUCTURA:\n' +
+      '1) Secciones principales ordenadas (I, II, III...). Casi siempre convienen: Objetivo y Alcance; Programa/Carta Gantt; la(s) sección(es) técnica(s) medulares del servicio (las más importantes y extensas); Recursos (equipos/personal/materiales); Seguridad y Salud (HSEC); Medio Ambiente; Aseguramiento de Calidad; Control de Avance. Pero AJUSTA según lo que las bases realmente exijan o valoren para la propuesta técnica.\n' +
+      '2) Si las BBTT indican explícitamente un índice o los aspectos que la propuesta técnica DEBE contener, RESPÉTALO (esa es la fuente principal). Si además hay Respuestas/Aclaraciones que lo modifican, prevalecen.\n' +
+      '3) Para cada sección, subsecciones sugeridas cuando aporten (ej. Recursos → Maquinaria/Flota, Personal Clave, Materiales/Insumos).\n' +
+      '4) Para cada sección, una "instruccion" breve (1-3 frases) que le diga a la IA qué debe cubrir esa sección para ESTE servicio específico, mencionando elementos concretos de las bases (procedimientos del mandante, estándares, hitos, etc.).\n\n' +
+      'REGLAS:\n' +
+      '- No inventes secciones que las bases no justifican. No copies un índice de obra civil si el servicio no es obra civil.\n' +
+      '- La(s) sección(es) técnica(s) central(es) del servicio deben quedar claramente identificadas (son las que más pesan en la evaluación).\n' +
+      '- Distingue obligatorio de deseable: si las bases "valoran" o "recomiendan" algo, puedes incluirlo pero indícalo en la instrucción como deseable, sin inventar exigencias.\n\n' +
+      'FORMATO DE SALIDA (OBLIGATORIO): responde ÚNICAMENTE con un array JSON válido, sin texto ni ``` alrededor. Forma EXACTA:\n' +
+      '[\n' +
+      '  {\n' +
+      '    "label": "I. Objetivo y Alcance",\n' +
+      '    "icon": "🎯",\n' +
+      '    "instruccion": "Qué debe cubrir esta sección para este servicio, citando elementos de las bases.",\n' +
+      '    "subsecciones": [ { "label": "Nombre subsección", "instruccion": "opcional" } ]\n' +
+      '  }\n' +
+      ']\n' +
+      'REGLAS DEL JSON: "label" con numeración romana (I, II, III...). "icon" un emoji representativo. "instruccion" siempre presente y útil. "subsecciones" puede ir vacío []. Máximo ~10 secciones. Responde SOLO el array.\n\n' +
+      'DOCUMENTOS DISPONIBLES Y SUS ETIQUETAS (identifica las Bases Técnicas / BBTT):\n' + listaDocs;
+
+    const userPrompt =
+      'Propón el índice de la metodología / propuesta técnica para esta licitación, adaptado al tipo de servicio real que describen las bases técnicas. ' +
+      'Incluye secciones, subsecciones e instrucción-guía por sección, en el formato JSON indicado. Responde solo con el array JSON.';
+
+    const resp = await llamarIAConContexto(systemPrompt, userPrompt, contexto);
+
+    // Registrar costo/uso
+    const modelCfg = MODELS[chatState.currentModel] || MODELS[modeloPrevio];
+    const tIn = resp.tokensIn || 0, tOut = resp.tokensOut || 0;
+    chatState.totalTokensIn += tIn;
+    chatState.totalTokensOut += tOut;
+    if (modelCfg) chatState.totalCost += (tIn / 1_000_000) * modelCfg.priceInput + (tOut / 1_000_000) * modelCfg.priceOutput;
+    if (typeof actualizarUsageStats === 'function') actualizarUsageStats();
+
+    const arr = metExtraerJSON(resp.text || '');
+    const estructuraNueva = metValidarEstructuraIA(arr);
+    if (!estructuraNueva) {
+      alert('⚠ La IA no devolvió una estructura válida. Intenta de nuevo; si persiste, revisa que las bases técnicas estén bien cargadas (idealmente la BBTT como PDF nativo).');
+      return;
+    }
+
+    // Preservar trabajo por fuzzy-merge
+    const estructuraVieja = METODOLOGIA_STATE.estructura || [];
+    const nuevoEstado = metMergeEstructura(estructuraNueva, estructuraVieja, METODOLOGIA_STATE);
+
+    METODOLOGIA_STATE.estructura = estructuraNueva;
+    METODOLOGIA_STATE.contenidos = nuevoEstado.contenidos;
+    METODOLOGIA_STATE.conversaciones = nuevoEstado.conversaciones;
+    METODOLOGIA_STATE.resultados = nuevoEstado.resultados;
+    METODOLOGIA_STATE.estructuraSugeridaIA = true;
+    METODOLOGIA_STATE.estructuraSugeridaIAAt = new Date().toISOString();
+    // Expandir la primera sección técnica para que el usuario la vea
+    METODOLOGIA_STATE.expandidas = METODOLOGIA_STATE.expandidas || {};
+    await guardarMetodologiaActual();
+
+    const costo = ((tIn/1_000_000)*(modelCfg?modelCfg.priceInput:0))+((tOut/1_000_000)*(modelCfg?modelCfg.priceOutput:0));
+    // Re-render del paso de estructura
+    renderPaso2Estructura(body);
+    // Aviso de éxito
+    setTimeout(() => {
+      alert('✅ Estructura sugerida desde las bases: ' + estructuraNueva.length + ' secciones.\n\n' +
+        'Se conservó tu trabajo previo por coincidencia de nombre (las secciones que no calzaron quedan al final marcadas como "(previa)").\n\n' +
+        'Revísala y ajústala libremente con ↑↓, editando nombres o instrucciones.\n\n' +
+        'Costo de esta sugerencia ≈ $' + costo.toFixed(4) + ' USD.');
+    }, 100);
+
+  } catch (e) {
+    alert('⚠ Error al sugerir la estructura: ' + (e.message || String(e)));
+  } finally {
+    chatState.currentModel = modeloPrevio;
+    metSugiriendoEstructura = false;
+    const b = document.getElementById('metSugerirEstructuraBtn');
+    if (b) { b.disabled = false; b.innerHTML = labelOrig || '⚡ Sugerir estructura según las bases'; b.style.opacity = '1'; }
+  }
 }
 
 async function generarSeccionMetodologia(seccionId, opts = {}) {
