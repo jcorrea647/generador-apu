@@ -6934,6 +6934,9 @@
             <div id="ofertaPlantillaBotones" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"></div>
             <span style="font-size:12px;color:var(--text-mute);margin:0 2px;">·</span>
             <button id="ofertaAddPlantillaBtn" style="font-size:12.5px;padding:6px 12px;border:1px dashed var(--border);border-radius:7px;background:var(--surface);cursor:pointer;font-family:inherit;color:var(--text-soft);">＋ Agregar plantilla</button>
+            <span style="font-size:12px;color:var(--text-mute);margin:0 2px;">·</span>
+            <button id="ofertaGenerarBtn" title="Lee los documentos cargados (priorizando la BPP) y arma el checklist real de esta licitación con IA" style="font-size:12.5px;padding:6px 12px;border:1px solid #047857;border-radius:7px;background:#ECFDF5;cursor:pointer;font-family:inherit;color:#047857;font-weight:600;">⚡ Generar desde documentos</button>
+            <button id="ofertaRegenerarBtn" title="Vuelve a generar el checklist leyendo de nuevo los documentos. Conserva tu avance por coincidencia de nombre." style="display:none;font-size:12.5px;padding:6px 12px;border:1px solid var(--border);border-radius:7px;background:var(--surface);cursor:pointer;font-family:inherit;color:var(--text-soft);">🔄 Regenerar</button>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center;">
             <button class="btn-secondary" id="ofertaExpandAllBtn" style="font-size:12px;padding:6px 12px;">▼ Expandir todo</button>
@@ -31707,6 +31710,8 @@ let ofertaState = {};
 let ofertaNotasGenerales = '';
 let ofertaSaveTimer = null;
 let ofertaCollapseState = {};
+let ofertaGeneradoIA = false;      // true si el checklist actual fue generado desde documentos por IA
+let ofertaGeneradoIAAt = null;     // timestamp de la última generación
 let ofertaFiltroResponsables = new Set();  // vacío = Todos; si no, claves normalizadas seleccionadas (incluye '__sin__' para los sin responsable)
 
 function ofertaStorageKey(licId) { return `oferta_${licId}`; }
@@ -31760,6 +31765,7 @@ async function cargarOfertaDeLicitacion(licId) {
   if (!licId) {
     ofertaState = {}; ofertaNotasGenerales = ''; ofertaCollapseState = {};
     ofertaEstructuraActual = null; ofertaPlantillaActual = OFERTA_PLANTILLA_DEFAULT;
+    ofertaGeneradoIA = false; ofertaGeneradoIAAt = null;
     return;
   }
   try {
@@ -31771,6 +31777,8 @@ async function cargarOfertaDeLicitacion(licId) {
       ofertaPlantillaActual = rec.data.plantilla || OFERTA_PLANTILLA_DEFAULT;
       ofertaEstructuraActual = (rec.data.estructura && Array.isArray(rec.data.estructura) && rec.data.estructura.length > 0)
         ? rec.data.estructura : null;
+      ofertaGeneradoIA = !!rec.data.generadoIA && !!ofertaEstructuraActual;
+      ofertaGeneradoIAAt = rec.data.generadoIAAt || null;
       // --- Limpieza una-sola-vez de búsquedas guardadas con el prompt anterior (v122) ---
       // Solo borra el texto de la búsqueda IA (basesTexto); conserva checks, comentarios y responsables.
       // Así las búsquedas se regeneran con el criterio nuevo (excluir obligaciones de ejecución).
@@ -31796,11 +31804,13 @@ async function cargarOfertaDeLicitacion(licId) {
       const tipoDetectado = licAct ? detectarTipoPorMandante(licAct.mandante) : null;
       ofertaPlantillaActual = tipoDetectado || OFERTA_PLANTILLA_DEFAULT;
       ofertaEstructuraActual = null;
+      ofertaGeneradoIA = false; ofertaGeneradoIAAt = null;
     }
   } catch (e) {
     console.warn('[oferta] error cargando estado:', e);
     ofertaState = {}; ofertaNotasGenerales = ''; ofertaCollapseState = {};
     ofertaEstructuraActual = null; ofertaPlantillaActual = OFERTA_PLANTILLA_DEFAULT;
+    ofertaGeneradoIA = false; ofertaGeneradoIAAt = null;
   }
 }
 
@@ -31813,6 +31823,8 @@ async function guardarOfertaActual() {
         items: ofertaState, notas: ofertaNotasGenerales, collapse: ofertaCollapseState,
         plantilla: ofertaPlantillaActual,
         estructura: ofertaEstructuraActual,  // null si usa la plantilla sin editar
+        generadoIA: ofertaGeneradoIA,
+        generadoIAAt: ofertaGeneradoIAAt,
         updatedAt: new Date().toISOString()
       }
     });
@@ -32231,6 +32243,315 @@ function cssEscOferta(s) {
   return String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
 }
 
+// ============================================================================
+// === GENERAR CHECKLIST DE OFERTA DESDE LOS DOCUMENTOS DE LA LICITACIÓN ===
+// ============================================================================
+// Lee las bases cargadas (priorizando la BPP) y arma la estructura real de
+// antecedentes a presentar para ESTA licitación, en el mismo formato que
+// OFERTA_ESTRUCTURA. Se guarda como ofertaEstructuraActual (por licitación).
+// Respeta: obligatorio vs deseable, jerarquía documental (respuestas/aclaratorias
+// prevalecen), y solo lo que va DENTRO de la propuesta (no ejecución).
+
+// Recolecta todos los ítems-hoja (con su label) de una estructura, para el fuzzy-merge del avance
+function ofertaRecolectarHojas(estructura) {
+  const hojas = [];
+  const rec = (items) => {
+    for (const it of (items || [])) {
+      if (it.items && it.items.length > 0) rec(it.items);
+      else hojas.push({ id: it.id, label: it.label || '' });
+    }
+  };
+  for (const carp of (estructura || [])) rec(carp.items);
+  return hojas;
+}
+
+// Normaliza un texto para comparar labels (sin tildes, minúsculas, sin puntuación)
+function ofertaNormLabel(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/form[-\s]*\d+[.\d]*/g, ' ')   // quita códigos FORM-1.02 que varían entre plantillas
+    .replace(/doc[-\s]*\d+[.\d]*/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+// Solapamiento de palabras (Jaccard simple) entre dos labels normalizados
+function ofertaSimilitudLabel(a, b) {
+  const sa = new Set(ofertaNormLabel(a).split(' ').filter(w => w.length > 2));
+  const sb = new Set(ofertaNormLabel(b).split(' ').filter(w => w.length > 2));
+  if (sa.size === 0 || sb.size === 0) return 0;
+  let inter = 0;
+  for (const w of sa) if (sb.has(w)) inter++;
+  return inter / Math.max(sa.size, sb.size);
+}
+
+// Preserva checks/responsable/comentario de la estructura vieja en la nueva por coincidencia
+// exacta de id o fuzzy de label. Devuelve un nuevo ofertaState.
+function ofertaMergeAvance(estructuraNueva, estadoViejo, estructuraVieja) {
+  const hojasViejas = ofertaRecolectarHojas(estructuraVieja);
+  const usados = new Set();
+  const nuevoEstado = {};
+  const CAMPOS = ['checked', 'responsable', 'comment', 'commentW', 'commentH'];
+
+  const copiarAvance = (destId, fuenteId) => {
+    const src = estadoViejo[fuenteId];
+    if (!src) return false;
+    if (!nuevoEstado[destId]) nuevoEstado[destId] = { checked: false, comment: '' };
+    let copio = false;
+    for (const c of CAMPOS) {
+      if (src[c] !== undefined && src[c] !== '' && src[c] !== false) {
+        nuevoEstado[destId][c] = src[c]; copio = true;
+      }
+    }
+    if (src.checked) { nuevoEstado[destId].checked = true; copio = true; }
+    return copio;
+  };
+
+  for (const hoja of ofertaRecolectarHojas(estructuraNueva)) {
+    // 1) match exacto por id
+    if (estadoViejo[hoja.id] && !usados.has(hoja.id)) {
+      copiarAvance(hoja.id, hoja.id); usados.add(hoja.id); continue;
+    }
+    // 2) match fuzzy por label
+    let mejor = null, mejorSim = 0;
+    for (const hv of hojasViejas) {
+      if (usados.has(hv.id)) continue;
+      const sim = ofertaSimilitudLabel(hoja.label, hv.label);
+      if (sim > mejorSim) { mejorSim = sim; mejor = hv; }
+    }
+    if (mejor && mejorSim >= 0.6) {
+      copiarAvance(hoja.id, mejor.id); usados.add(mejor.id);
+    }
+  }
+  return nuevoEstado;
+}
+
+// Valida que el JSON devuelto por la IA tenga la forma de OFERTA_ESTRUCTURA
+function ofertaValidarEstructuraIA(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const COLORES = [
+    { color: '#185FA5', bg: '#E6F1FB' },
+    { color: '#0F6E56', bg: '#E1F5EE' },
+    { color: '#854F0B', bg: '#FAEEDA' },
+    { color: '#6D28D9', bg: '#F1EAFB' },
+    { color: '#B45309', bg: '#FEF3E2' },
+  ];
+  const limpiarItems = (items) => {
+    if (!Array.isArray(items)) return [];
+    const out = [];
+    for (const it of items) {
+      if (!it || typeof it !== 'object') continue;
+      const id = String(it.id || '').trim();
+      const label = String(it.label || '').trim();
+      if (!id || !label) continue;
+      const nodo = { id, label };
+      if (it.hint && String(it.hint).trim()) nodo.hint = String(it.hint).trim();
+      if (Array.isArray(it.items) && it.items.length > 0) {
+        const sub = limpiarItems(it.items);
+        if (sub.length > 0) nodo.items = sub;
+      }
+      out.push(nodo);
+    }
+    return out;
+  };
+  const estructura = [];
+  arr.forEach((carp, i) => {
+    if (!carp || typeof carp !== 'object') return;
+    const id = String(carp.id || ('CARP_' + (i + 1))).trim();
+    const titulo = String(carp.titulo || carp.label || '').trim();
+    if (!titulo) return;
+    const items = limpiarItems(carp.items);
+    if (items.length === 0) return;
+    const col = COLORES[i % COLORES.length];
+    estructura.push({
+      id, titulo,
+      descripcion: String(carp.descripcion || '').trim(),
+      color: col.color, bg: col.bg,
+      items,
+    });
+  });
+  return estructura.length > 0 ? estructura : null;
+}
+
+// Extrae el primer bloque JSON de un texto (por si la IA lo envuelve en ``` o texto)
+function ofertaExtraerJSON(texto) {
+  if (!texto) return null;
+  let t = texto.trim();
+  t = t.replace(/```json/gi, '').replace(/```/g, '').trim();
+  // Buscar el primer '[' y el último ']' que lo cierra
+  const ini = t.indexOf('[');
+  const fin = t.lastIndexOf(']');
+  if (ini === -1 || fin === -1 || fin <= ini) return null;
+  const frag = t.slice(ini, fin + 1);
+  try { return JSON.parse(frag); } catch (e) {
+    // intento de reparación mínima: quitar comas colgantes
+    try { return JSON.parse(frag.replace(/,\s*([\]}])/g, '$1')); } catch (e2) { return null; }
+  }
+}
+
+let ofertaGenerandoEnCurso = false;
+
+async function generarChecklistDesdeDocumentos({ esRegeneracion = false } = {}) {
+  if (ofertaGenerandoEnCurso) return;
+
+  // Validaciones de entrada
+  if (!chatState.apiKey && !chatState.googleApiKey) {
+    alert('⚠ Configura una API key (Claude o Gemini) en el botón de configuración para usar esta función.');
+    return;
+  }
+  const docsValidos = (state.docs || []).filter(d => !d.skipped && d.blob);
+  if (docsValidos.length === 0) {
+    alert('⚠ No hay documentos cargados en esta licitación. Sube las bases en la sección de Documentos antes de generar el checklist.');
+    return;
+  }
+
+  // Confirmación (más fuerte si hay avance que se va a re-mapear)
+  const hayAvance = Object.values(ofertaState || {}).some(s => s && (s.checked || s.responsable || s.comment));
+  const msgConfirm = esRegeneracion
+    ? 'Se volverá a generar el checklist leyendo de nuevo los documentos cargados.\n\n' +
+      (hayAvance ? 'Tu avance (marcas, responsables y comentarios) se intentará conservar por coincidencia de nombre.\n\n' : '') +
+      'Esto consume una llamada a la IA (Gemini Pro). ¿Continuar?'
+    : 'Se generará el checklist de presentación de oferta leyendo los documentos cargados de ESTA licitación ' +
+      '(priorizando la Bases Presentación de Propuesta).\n\n' +
+      (hayAvance ? 'Reemplazará el checklist actual. Tu avance se intentará conservar por coincidencia de nombre.\n\n' : 'Reemplazará el checklist genérico actual.\n\n') +
+      'Esto consume una llamada a la IA (Gemini Pro). ¿Continuar?';
+  if (!confirm(msgConfirm)) return;
+
+  ofertaGenerandoEnCurso = true;
+  const btnGen = document.getElementById('ofertaGenerarBtn');
+  const btnReg = document.getElementById('ofertaRegenerarBtn');
+  const labelOrigGen = btnGen ? btnGen.innerHTML : '';
+  const labelOrigReg = btnReg ? btnReg.innerHTML : '';
+  if (btnGen) { btnGen.disabled = true; btnGen.innerHTML = '⏳ Generando…'; btnGen.style.opacity = '0.7'; }
+  if (btnReg) { btnReg.disabled = true; btnReg.innerHTML = '⏳ Generando…'; btnReg.style.opacity = '0.7'; }
+
+  // Aviso de progreso inline (bajo la barra de plantillas)
+  let avisoEl = document.getElementById('ofertaGenAviso');
+  if (!avisoEl) {
+    avisoEl = document.createElement('div');
+    avisoEl.id = 'ofertaGenAviso';
+    avisoEl.style.cssText = 'margin-top:10px;padding:9px 12px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:12px;color:#1E40AF;';
+    const barra = document.getElementById('ofertaGenerarBtn');
+    if (barra && barra.parentElement) barra.parentElement.parentElement.appendChild(avisoEl);
+  }
+  avisoEl.style.display = 'block';
+  avisoEl.innerHTML = '🔎 Leyendo los documentos cargados y construyendo el checklist con Gemini Pro… esto puede tardar entre 20 y 60 segundos. No cierres la licitación.';
+
+  // Forzar Gemini Pro para esta llamada (respeta el patrón: override temporal de currentModel)
+  const modeloPrevio = chatState.currentModel;
+  const usarPro = !!MODELS['gemini-pro'] && !!chatState.googleApiKey;
+  if (usarPro) chatState.currentModel = 'gemini-pro';
+
+  try {
+    const docIds = docsValidos.map(d => d.id);
+    const listaDocs = docsValidos
+      .map(d => '- "' + (d.name || 'documento') + '"' + (d.tag ? ' [' + d.tag + ']' : ' [sin etiqueta]'))
+      .join('\n');
+
+    const contexto = await prepararContextoBases(docIds);
+
+    const systemPrompt =
+      'Eres un experto en licitaciones de construcción e infraestructura en Chile (obras públicas MOP, minería y privados). ' +
+      'Tu tarea es construir el CHECKLIST DE PRESENTACIÓN DE LA OFERTA para esta licitación específica, leyendo los documentos entregados.\n\n' +
+      'QUÉ DEBES PRODUCIR:\n' +
+      'La lista COMPLETA y ORDENADA de los antecedentes, formularios, anexos y documentos que la empresa debe ENTREGAR DENTRO DE SU PROPUESTA para postular a esta licitación, agrupados en carpetas/secciones tal como lo definen las bases.\n\n' +
+      'FUENTE PRINCIPAL — LA BPP:\n' +
+      'Existe normalmente un documento maestro de tipo "Bases Presentación de Propuesta" (BPP) o equivalente (también puede llamarse "Bases Administrativas", "Instrucciones a los Oferentes", "Formato de Presentación", etc.). ESE documento define el índice de antecedentes a presentar. Úsalo como columna vertebral del checklist: replica sus carpetas/secciones y los documentos que exige, con la MISMA nomenclatura y códigos de formulario/anexo que aparezcan textualmente (ej. FORM-1.02, Anexo N°3, DOC-1.01). NO inventes códigos de otra licitación.\n\n' +
+      'JERARQUÍA DOCUMENTAL (CRÍTICO):\n' +
+      'Si hay documentos de Respuestas a Consultas, Aclaraciones, Circulares Aclaratorias o Adendas, estos PREVALECEN sobre las bases originales. Si una aclaración agrega, elimina o modifica un antecedente a presentar, refleja la versión ACLARADA en el checklist (la más reciente/vigente manda).\n\n' +
+      'ALCANCE — SOLO LO QUE VA EN LA PROPUESTA (no ejecución):\n' +
+      'Incluye ÚNICAMENTE lo que se entrega físicamente dentro del sobre/propuesta ANTES de adjudicar. NO incluyas obligaciones de EJECUCIÓN contractual (cosas que el contratista hará, mantendrá, registrará o entregará DURANTE el servicio una vez ganado). Prueba decisiva por cada ítem: "¿esto se sube/entrega como parte de la oferta antes de adjudicar?". Si no es un SÍ claro, no lo incluyas.\n\n' +
+      'OBLIGATORIO vs DESEABLE:\n' +
+      'Todo lo que la BPP exige presentar es obligatorio por definición (va en el checklist). Cuando un documento use lenguaje de deseabilidad ("se valora", "deseable", "preferentemente", "recomendado"), NO lo conviertas en exigido: puedes incluirlo como ítem pero marca en su "hint" que es DESEABLE/OPCIONAL, citando textualmente la palabra usada. Nunca transformes "deseado" en "exigido".\n\n' +
+      'PERSONAL CLAVE:\n' +
+      'Si las bases entregan una lista explícita de cargos mínimos del personal clave, respétala EXACTAMENTE (mismos cargos, orden y cantidad). No agregues cargos "típicos" que las bases no piden.\n\n' +
+      'FORMATO DE SALIDA (OBLIGATORIO):\n' +
+      'Responde ÚNICAMENTE con un array JSON válido, sin texto antes ni después, sin ```. Estructura EXACTA:\n' +
+      '[\n' +
+      '  {\n' +
+      '    "id": "A",\n' +
+      '    "titulo": "Carpeta A — <nombre real según las bases>",\n' +
+      '    "descripcion": "<qué contiene esta carpeta, breve>",\n' +
+      '    "items": [\n' +
+      '      { "id": "A.1", "label": "<nombre del documento/formulario tal como lo nombran las bases>", "hint": "<detalle útil: qué debe contener, formato exigido, si es DESEABLE cítalo, y fuente ej. (BPP p.7) o (Aclaración N°2)>" },\n' +
+      '      { "id": "A.2", "label": "...", "items": [ { "id": "A.2.a", "label": "<sub-documento>" } ] }\n' +
+      '    ]\n' +
+      '  }\n' +
+      ']\n\n' +
+      'REGLAS DEL JSON:\n' +
+      '1. "id" jerárquico y único (carpetas: A, B, C…; ítems: A.1, A.2…; sub-ítems: A.1.a, A.1.b…).\n' +
+      '2. "label" corto (el nombre del documento). El detalle va en "hint".\n' +
+      '3. Usa "items" anidados solo cuando las bases agrupen sub-documentos bajo un antecedente (ej. "Antecedentes Financieros" con varios certificados).\n' +
+      '4. En "hint", cuando puedas, indica la FUENTE (documento y página/cláusula). Nunca inventes páginas.\n' +
+      '5. Si un antecedente proviene de una aclaración que modifica las bases, dilo en el "hint" (ej. "Modificado por Respuesta N°3").\n' +
+      '6. NO incluyas obligaciones de ejecución. NO inventes documentos que las bases no piden. Si algo es deseable/opcional, márcalo en el hint.\n' +
+      '7. Máximo ~6 carpetas. Sé completo pero fiel: refleja lo que dicen los documentos, no una plantilla genérica.\n\n' +
+      'DOCUMENTOS DISPONIBLES Y SUS ETIQUETAS (identifica cuál es la BPP):\n' + listaDocs;
+
+    const userPrompt =
+      'Construye el checklist de presentación de la oferta para esta licitación, en el formato JSON indicado. ' +
+      'Prioriza la BPP como índice maestro, aplica la jerarquía documental (respuestas/aclaratorias prevalecen), ' +
+      'incluye solo lo que va DENTRO de la propuesta, y distingue obligatorio de deseable en los hints. ' +
+      'Responde solo con el array JSON, sin explicaciones.';
+
+    const resp = await llamarIAConContexto(systemPrompt, userPrompt, contexto);
+
+    // Registrar costo/uso igual que el resto de la app
+    const modelCfg = MODELS[chatState.currentModel] || MODELS[modeloPrevio];
+    const tIn = resp.tokensIn || 0, tOut = resp.tokensOut || 0;
+    chatState.totalTokensIn += tIn;
+    chatState.totalTokensOut += tOut;
+    if (modelCfg) {
+      chatState.totalCost += (tIn / 1_000_000) * modelCfg.priceInput +
+                             (tOut / 1_000_000) * modelCfg.priceOutput;
+    }
+    if (typeof actualizarUsageStats === 'function') actualizarUsageStats();
+
+    const arrJSON = ofertaExtraerJSON(resp.text || '');
+    const estructuraNueva = ofertaValidarEstructuraIA(arrJSON);
+    if (!estructuraNueva) {
+      avisoEl.style.cssText = 'margin-top:10px;padding:9px 12px;background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;font-size:12px;color:#991B1B;';
+      avisoEl.innerHTML = '⚠ La IA no devolvió un checklist válido. Intenta de nuevo; si persiste, revisa que las bases estén bien cargadas (la BPP idealmente como PDF nativo).';
+      return;
+    }
+
+    // Preservar avance por fuzzy-merge respecto de la estructura visible actualmente
+    const estructuraVieja = ofertaEstructura();
+    const estadoViejo = ofertaState || {};
+    ofertaState = ofertaMergeAvance(estructuraNueva, estadoViejo, estructuraVieja);
+
+    // Guardar como estructura propia de ESTA licitación
+    ofertaEstructuraActual = estructuraNueva;
+    ofertaCollapseState = {};
+    ofertaGeneradoIA = true;   // bandera para mostrar sello y botón Regenerar
+    ofertaGeneradoIAAt = new Date().toISOString();
+    // Persistimos también la bandera dentro del registro (ver guardarOfertaActual extendido)
+    await guardarOfertaActual();
+
+    avisoEl.style.cssText = 'margin-top:10px;padding:9px 12px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:12px;color:#166534;';
+    const nItems = ofertaRecolectarHojas(estructuraNueva).length;
+    avisoEl.innerHTML = '✅ Checklist generado desde tus documentos: <strong>' + estructuraNueva.length + ' carpetas, ' + nItems + ' ítems</strong>. ' +
+      'Revisa siempre contra la fuente original — la IA puede equivocarse. ' +
+      '<span style="color:#166534;opacity:0.8;">(Costo de esta generación ≈ $' + (((tIn/1_000_000)*(modelCfg?modelCfg.priceInput:0))+((tOut/1_000_000)*(modelCfg?modelCfg.priceOutput:0))).toFixed(4) + ' USD)</span>';
+    setTimeout(() => { if (avisoEl) avisoEl.style.display = 'none'; }, 15000);
+
+    renderCargarOferta();
+  } catch (e) {
+    if (avisoEl) {
+      avisoEl.style.cssText = 'margin-top:10px;padding:9px 12px;background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;font-size:12px;color:#991B1B;';
+      avisoEl.innerHTML = '⚠ Error al generar el checklist: ' + escHTMLOferta(e.message || String(e));
+    }
+  } finally {
+    chatState.currentModel = modeloPrevio;   // restaurar modelo del usuario
+    ofertaGenerandoEnCurso = false;
+    const bg = document.getElementById('ofertaGenerarBtn');
+    const br = document.getElementById('ofertaRegenerarBtn');
+    if (bg) { bg.disabled = false; bg.innerHTML = labelOrigGen || '⚡ Generar desde documentos'; bg.style.opacity = '1'; }
+    if (br) { br.disabled = false; br.innerHTML = labelOrigReg || '🔄 Regenerar'; br.style.opacity = '1'; }
+  }
+}
+
 // === Buscar qué dicen las bases sobre un requerimiento del checklist ===
 async function buscarRequerimientoEnBases(itemId, itemLabel) {
   const contentEl = document.querySelector('.oferta-bases-content[data-content-id="' + cssEscOferta(itemId) + '"]');
@@ -32413,6 +32734,7 @@ function ofertaWireBotones() {
         ofertaPlantillaActual = key;
         ofertaEstructuraActual = null;
         ofertaCollapseState = {};
+        ofertaGeneradoIA = false; ofertaGeneradoIAAt = null;
         await guardarOfertaActual();
         renderCargarOferta();
       });
@@ -32451,9 +32773,45 @@ function ofertaWireBotones() {
       ofertaPlantillaActual = key;
       ofertaEstructuraActual = null;
       ofertaCollapseState = {};
+      ofertaGeneradoIA = false; ofertaGeneradoIAAt = null;
       await guardarOfertaActual();
       renderCargarOferta();
     });
+  }
+
+  // Botón "Generar desde documentos" (siempre disponible en cada licitación)
+  const genBtn = document.getElementById('ofertaGenerarBtn');
+  if (genBtn && !genBtn.dataset.wired) {
+    genBtn.dataset.wired = '1';
+    genBtn.addEventListener('click', () => generarChecklistDesdeDocumentos({ esRegeneracion: false }));
+  }
+  // Botón "Regenerar" (solo visible si el checklist actual ya fue generado por IA)
+  const regBtn = document.getElementById('ofertaRegenerarBtn');
+  if (regBtn) {
+    regBtn.style.display = ofertaGeneradoIA ? 'inline-flex' : 'none';
+    if (!regBtn.dataset.wired) {
+      regBtn.dataset.wired = '1';
+      regBtn.addEventListener('click', () => generarChecklistDesdeDocumentos({ esRegeneracion: true }));
+    }
+  }
+  // Sello "Generado por IA" junto a los botones de plantilla
+  const contSello = document.getElementById('ofertaPlantillaBotones');
+  const selloPrevio = document.getElementById('ofertaSelloIA');
+  if (selloPrevio) selloPrevio.remove();
+  if (ofertaGeneradoIA && contSello) {
+    const sello = document.createElement('span');
+    sello.id = 'ofertaSelloIA';
+    let cuando = '';
+    if (ofertaGeneradoIAAt) {
+      try {
+        const d = new Date(ofertaGeneradoIAAt);
+        cuando = ' · ' + d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' }) +
+                 ' ' + d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+      } catch (e) {}
+    }
+    sello.style.cssText = 'font-size:11px;padding:4px 9px;border-radius:99px;background:#ECFDF5;color:#047857;border:1px solid #A7F3D0;font-weight:600;white-space:nowrap;';
+    sello.textContent = '⚡ Checklist generado desde tus documentos' + cuando;
+    contSello.appendChild(sello);
   }
 
   const expandBtn = document.getElementById('ofertaExpandAllBtn');
