@@ -13326,6 +13326,56 @@ Plazo entre adjudicación y firma, requisitos previos.
 - Resalta con > ⚠️ **Atención:** los hitos críticos cuyo incumplimiento descalifica la oferta.`,
   },
   {
+    id: 'consultas-analisis',
+    modeloRecomendado: 'gemini-pro',
+    icon: '💬',
+    categoria: 'contractual',
+    label: 'Análisis Consultas',
+    titulo: 'Análisis de consultas y respuestas del proceso',
+    maxTokens: 16384,
+    prompt: `Analiza los documentos de **consultas, respuestas a consultas, aclaraciones, circulares aclaratorias, enmiendas, addendas o foro de preguntas** emitidos durante ESTE proceso de licitación. Identifícalos por su contenido: preguntas de los oferentes con sus respuestas oficiales del mandante, "respuestas a consultas", "aclaración N°X", "circular aclaratoria", "serie de preguntas y respuestas", etc. Usa las bases originales SOLO como referencia para determinar qué cambió respecto de ellas.
+
+Tu respuesta en markdown, con EXACTAMENTE esta estructura:
+
+### 1. Vigencia de la fecha de entrega de la oferta
+ESTA ES LA SECCIÓN MÁS IMPORTANTE Y VA PRIMERO. Lo primero que debe quedar claro es si la fecha/hora de cierre para PRESENTAR LA OFERTA se mantiene o cambió producto de las consultas/aclaraciones.
+
+Comienza con UNA línea destacada en negrita indicando el estado, elige uno:
+- ✅ **VIGENTE — sin cambios:** la fecha de entrega original se mantiene.
+- ⏸️ **APLAZADA (prórroga):** la fecha se movió a una fecha POSTERIOR.
+- ⏩ **ADELANTADA:** la fecha se movió a una fecha ANTERIOR.
+
+Luego, siempre indica:
+- **Fecha original (bases):** día, mes, año y hora exactos, con su cita.
+- **Fecha vigente:** día, mes, año y hora exactos.
+- **Documento que la modifica:** si cambió, el nombre EXACTO del archivo de aclaración/respuesta + página o sección. Si no cambió, escribe "No aplica".
+
+Reglas de esta sección:
+- Si hubo VARIOS aplazamientos sucesivos, lístalos en orden cronológico y deja clarísimo cuál es la ÚLTIMA fecha vigente.
+- Si NO encuentras ninguna aclaración que modifique la fecha, dilo explícitamente: "No se encontró aclaración que modifique la fecha de entrega; se mantiene la fecha de las bases." y cita la fecha original.
+- Si además cambiaron otras fechas del proceso (visita a terreno, cierre del período de consultas, acto de apertura), anótalo en una línea cada una con su cita.
+- Resalta con > ⚠️ **Atención:** cuando la nueva fecha esté próxima o el cambio sea relevante para planificar la entrega.
+
+### 2. Resumen de hallazgos principales
+Lista los hallazgos MÁS RELEVANTES de las consultas y respuestas — lo que un oferente necesita saber para no equivocarse. Para CADA hallazgo, un bullet con:
+- **Tema** (2-5 palabras en negrita) seguido de qué se preguntó y qué respondió concretamente el mandante, y por qué importa (¿aclara o cambia una exigencia, un plazo, una garantía/anticipo, una partida o cantidad, un requisito de personal, un criterio de evaluación, un documento a presentar?).
+- **Archivo fuente:** nombre EXACTO del documento donde aparece la respuesta + página o sección, para que el usuario pueda ubicarlo y buscarlo (usa el formato de cita indicado más abajo).
+
+Prioridad y marcado:
+- Los hallazgos que MODIFIQUEN las bases (nueva exigencia, cambio de plazo, cambio de presupuesto/partidas, cambio en garantías o anticipos, cambio en criterios de evaluación) van PRIMERO y se marcan con > ⚠️ **Modifica las bases:** seguido del "antes → después" concreto.
+- Agrupa consultas similares bajo un mismo tema en vez de repetirlas.
+- Si una respuesta solo remite a "lo indicado en las bases" sin aportar nada nuevo, márcala brevemente como "sin cambio" o omítela.
+
+### 3. Consultas sin respuesta clara o pendientes
+Solo si aplica: preguntas relevantes que el mandante no respondió, respondió de forma ambigua, o dejó pendientes. Cada una con su cita. Si no hay ninguna, OMITE esta sección entera (no la incluyas como "no aplica").
+
+REGLAS CRÍTICAS:
+- CADA hallazgo debe ir SIEMPRE referenciado al archivo donde está la respuesta (nombre del documento + página/sección), para trazabilidad — ese es el objetivo central de este análisis.
+- Las aclaraciones/respuestas PREVALECEN sobre las bases originales: cuando algo cambió, deja explícito el "antes → después".
+- No inventes. Si un dato (como la fecha original) no está en los documentos cargados, dilo con "No se encuentra en los documentos cargados".
+- Si NO hay ningún documento de consultas, respuestas o aclaraciones entre los cargados, indícalo de forma destacada al inicio: "⚠️ No se encontraron documentos de consultas o respuestas cargados. Sube el archivo de respuestas a consultas para este análisis." y no inventes hallazgos.`,
+  },
+  {
     id: 'personal',
     modeloRecomendado: 'gemini-pro',
     icon: '👷',
@@ -20111,6 +20161,12 @@ function _metNewId(prefix = 'sec') {
   return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
 }
 
+// Helper: detecta las secciones "antiguas" que el merge de estructura preserva
+// al final marcadas con el sufijo "(previa)".
+function _esSeccionPrevia(sec) {
+  return /\(previa\)\s*$/i.test((sec && sec.label) || '');
+}
+
 // Helper: mueve un item en un array (idx → idx+delta)
 function _moverEnArray(arr, idx, delta) {
   const newIdx = idx + delta;
@@ -20552,6 +20608,12 @@ function renderPaso2Estructura(body) {
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px;">
       <button id="metAddSecBtn" class="btn-secondary btn-sm">+ Agregar sección</button>
       <button id="metSugerirEstructuraBtn" class="btn-sm" title="Lee las bases técnicas cargadas y propone un índice de metodología adaptado al tipo de servicio de esta licitación. Conserva tu trabajo por coincidencia de nombre." style="font-size:12px;padding:6px 12px;border:1px solid #047857;border-radius:7px;background:#ECFDF5;color:#047857;font-weight:600;cursor:pointer;font-family:inherit;">⚡ Sugerir estructura según las bases</button>
+      ${(() => {
+        const nPrevia = est.filter(_esSeccionPrevia).length;
+        return nPrevia > 0
+          ? `<button id="metQuitarPreviaBtn" title="Elimina las secciones antiguas marcadas &quot;(previa)&quot; que quedaron duplicadas al sugerir una nueva estructura." style="font-size:12px;padding:6px 12px;border:1px solid #FCA5A5;border-radius:7px;background:#FEF2F2;color:#B91C1C;font-weight:600;cursor:pointer;font-family:inherit;">🧹 Quitar ${nPrevia} sección(es) "(previa)"</button>`
+          : '';
+      })()}
       ${METODOLOGIA_STATE.estructuraSugeridaIA ? '<span style="font-size:11px;padding:4px 9px;border-radius:99px;background:#ECFDF5;color:#047857;border:1px solid #A7F3D0;font-weight:600;white-space:nowrap;">⚡ Estructura sugerida desde las bases</span>' : ''}
     </div>
 
@@ -20662,6 +20724,29 @@ function renderPaso2Estructura(body) {
   const sugBtn = body.querySelector('#metSugerirEstructuraBtn');
   if (sugBtn) {
     sugBtn.addEventListener('click', () => sugerirEstructuraMetodologia(body));
+  }
+  // Quitar secciones "(previa)" (las antiguas que quedaron duplicadas tras sugerir estructura)
+  const quitarPreviaBtn = body.querySelector('#metQuitarPreviaBtn');
+  if (quitarPreviaBtn) {
+    quitarPreviaBtn.addEventListener('click', async () => {
+      const previas = METODOLOGIA_STATE.estructura.filter(_esSeccionPrevia);
+      if (previas.length === 0) return;
+      const nombres = previas.map(s => `• ${s.label}`).join('\n');
+      if (!confirm(`¿Eliminar ${previas.length} sección(es) marcada(s) "(previa)"?\n\n${nombres}\n\nSe borrará también su contenido generado. Esta acción no se puede deshacer.`)) {
+        return;
+      }
+      // Limpiar contenido/conversaciones/resultados asociados y quitar las secciones
+      for (const s of previas) {
+        delete METODOLOGIA_STATE.contenidos[s.id];
+        if (METODOLOGIA_STATE.conversaciones) delete METODOLOGIA_STATE.conversaciones[s.id];
+        if (METODOLOGIA_STATE.resultados) delete METODOLOGIA_STATE.resultados[s.id];
+        if (METODOLOGIA_STATE.revisionAbierta) delete METODOLOGIA_STATE.revisionAbierta[s.id];
+        if (METODOLOGIA_STATE.expandidas) delete METODOLOGIA_STATE.expandidas[s.id];
+      }
+      METODOLOGIA_STATE.estructura = METODOLOGIA_STATE.estructura.filter(s => !_esSeccionPrevia(s));
+      await guardarMetodologiaActual();
+      renderPaso2Estructura(body);
+    });
   }
   // Agregar subsección
   body.querySelectorAll('[data-add-sub]').forEach(btn => {
