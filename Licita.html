@@ -5433,6 +5433,26 @@
   }
   .met-ver-btn:hover { background: #BBF7D0; }
   .met-ver-btn:active { transform: scale(0.96); }
+  /* Botón "Regenerar / Generar a pedido" (por sección, en el Paso 1) */
+  .met-regen-btn {
+    background: #FEF3C7;
+    color: #92400E;
+    border: 1px solid #FCD34D;
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 99px;
+    font-weight: 700;
+    flex-shrink: 0;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s, opacity 0.15s;
+  }
+  .met-regen-btn:hover:not(:disabled) { background: #FDE68A; }
+  .met-regen-btn:active:not(:disabled) { transform: scale(0.96); }
+  .met-regen-btn.is-loading,
+  .met-regen-btn:disabled { opacity: 0.7; cursor: default; }
+  .met-regen-btn.is-loading { background: #FEF3C7; color: #92400E; }
   /* Modal del visor de sección */
   .met-visor-overlay {
     position: fixed; inset: 0; z-index: 10000;
@@ -20062,6 +20082,7 @@ const METODOLOGIA_STATE = {
   conversaciones: {},    // { seccionId: [{role, content}, ...] } historial para iterar
   revisionAbierta: {},   // { seccionId: true/false } qué secciones están desplegadas en la revisión
   iterandoSeccion: null, // seccionId que se está regenerando ahora mismo (o null)
+  regenSecId: null,      // seccionId que se está (re)generando a pedido desde el Paso 1 (o null)
   faseRevision: false,   // true cuando ya se generó todo y estamos en modo revisión/iteración
 };
 
@@ -20154,6 +20175,7 @@ async function cargarMetodologiaDeLicitacion(licId) {
   METODOLOGIA_STATE.revisionAbierta = {};
   METODOLOGIA_STATE.faseRevision = false;
   METODOLOGIA_STATE.iterandoSeccion = null;
+  METODOLOGIA_STATE.regenSecId = null;
   METODOLOGIA_STATE.expandidas = {};
   METODOLOGIA_STATE.estructuraSugeridaIA = false;
   METODOLOGIA_STATE.estructuraSugeridaIAAt = null;
@@ -20441,6 +20463,19 @@ function renderPaso2Estructura(body) {
           <span class="met-sec-icon">${sec.icon || '📄'}</span>
           <input type="text" class="met-sec-label" value="${escapeHtml(sec.label)}" data-rename-sec="${sec.id}">
           ${metodologiaSeccionGenerada(sec.id) ? `<button class="met-ver-btn" data-ver-sec="${sec.id}" title="Ver y editar el contenido generado de esta sección">👁 Ver</button>` : ''}
+          ${(() => {
+            const regenerando = METODOLOGIA_STATE.regenSecId === sec.id;
+            const yaGenerada = metodologiaSeccionGenerada(sec.id);
+            if (regenerando) {
+              return `<button class="met-regen-btn is-loading" disabled>⏳ Generando…</button>`;
+            }
+            const label = yaGenerada ? '🔄 Regenerar' : '✨ Generar';
+            const title = yaGenerada
+              ? 'Vuelve a generar SOLO esta sección con la IA (reemplaza su contenido actual)'
+              : 'Genera SOLO esta sección con la IA, sin regenerar las demás';
+            const dis = METODOLOGIA_STATE.regenSecId ? 'disabled' : '';
+            return `<button class="met-regen-btn" data-regen-sec="${sec.id}" title="${title}" ${dis}>${label}</button>`;
+          })()}
           <span class="met-sub-badge">${sec.subsecciones.length} sub</span>
           <button class="met-expand-btn" data-toggle="${sec.id}">${expandida ? '▼' : '▶'}</button>
           <button class="met-del-btn" data-del-sec="${sec.id}" title="Eliminar sección">🗑️</button>
@@ -20566,6 +20601,13 @@ function renderPaso2Estructura(body) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       abrirVisorSeccionMetodologia(btn.dataset.verSec);
+    });
+  });
+  // Botón "🔄 Regenerar / ✨ Generar": (re)genera SOLO esta sección, a pedido
+  body.querySelectorAll('[data-regen-sec]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      regenerarSeccionMetodologiaPaso1(btn.dataset.regenSec, body);
     });
   });
   // Activar/desactivar sección
@@ -22001,6 +22043,72 @@ async function iterarSeccionMetodologia(secId, instruccion, body) {
   } finally {
     METODOLOGIA_STATE.iterandoSeccion = null;
     renderPaso3Revision(body);
+  }
+}
+
+// (Re)genera SOLO una sección a pedido desde el Paso 1 (editor de estructura),
+// sin tocar las demás secciones. Útil para rehacer una sección puntual
+// (p. ej. "IV. Instalación de Faenas") tras ajustar su instrucción de contexto.
+async function regenerarSeccionMetodologiaPaso1(secId, body) {
+  if (METODOLOGIA_STATE.regenSecId) return; // ya hay una en curso
+  const sec = METODOLOGIA_STATE.estructura.find(s => s.id === secId);
+  if (!sec) return;
+
+  // Si ya tenía contenido, confirmar para no perder ediciones manuales.
+  if (metodologiaSeccionGenerada(secId)) {
+    if (!confirm(`¿Regenerar la sección "${sec.label}"? Se reemplazará su contenido actual (incluidas ediciones manuales) por una nueva versión de la IA.`)) {
+      return;
+    }
+    // Regeneración limpia: descartamos el historial previo para no arrastrar iteraciones.
+    if (METODOLOGIA_STATE.conversaciones) delete METODOLOGIA_STATE.conversaciones[secId];
+  }
+
+  METODOLOGIA_STATE.regenSecId = secId;
+  METODOLOGIA_STATE.resultados[secId] = 'generando';
+  renderPaso2Estructura(body);
+
+  // Asegurar contexto de documentos disponible (igual que en la generación completa)
+  try {
+    if (!chatState.preparedContext || !Array.isArray(chatState.preparedContext) || chatState.contextDirty) {
+      chatState.preparedContext = await prepararDocsParaClaude();
+      chatState.contextDirty = false;
+    }
+  } catch (e) {
+    console.error('Error preparando contexto:', e);
+    chatState.preparedContext = chatState.preparedContext || [];
+  }
+
+  const generarUnaVez = () => generarSeccionMetodologia(secId);
+
+  try {
+    let contenido;
+    try {
+      contenido = await generarUnaVez();
+    } catch (e) {
+      // Reintento único ante rate limit, como en la generación completa
+      if (e.isRateLimit || /429|rate limit/i.test(e.message || '')) {
+        const espera = (e.retryAfterSeconds || 30) + 2;
+        await new Promise(r => setTimeout(r, espera * 1000));
+        contenido = await generarUnaVez();
+      } else {
+        throw e;
+      }
+    }
+    METODOLOGIA_STATE.contenidos[secId] = contenido;
+    METODOLOGIA_STATE.resultados[secId] = 'ok';
+    await guardarMetodologiaActual();
+  } catch (e) {
+    console.error('Error (re)generando sección a pedido', secId, e);
+    METODOLOGIA_STATE.resultados[secId] = 'error';
+    if (e.isRateLimit) {
+      const espera = (e.retryAfterSeconds || 30) + 2;
+      alert(`Rate limit del modelo. Espera ~${espera}s e intenta de nuevo.`);
+    } else {
+      alert('Error al (re)generar la sección: ' + (e.message || e));
+    }
+  } finally {
+    METODOLOGIA_STATE.regenSecId = null;
+    renderPaso2Estructura(body);
   }
 }
 
