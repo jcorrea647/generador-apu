@@ -10034,6 +10034,58 @@ async function _asegurarBlob(doc) {
   return null;
 }
 
+// ============================================================
+// === PRIVACIDAD POR PROYECTO (owner_id) =====================
+// ============================================================
+// La tabla kv_store tiene una columna owner_id:
+//   NULL  -> registro compartido: lo ve todo el equipo (comportamiento antiguo)
+//   uuid  -> registro privado: solo lo ve/edita ese usuario (lo impone RLS)
+// Regla: las licitaciones NUEVAS creadas por los usuarios listados abajo
+// nacen privadas. Sus documentos, chats, análisis, ofertas, etc. heredan
+// automáticamente el dueño de su licitación.
+const PRIVAR_NUEVOS_DE = ['d24996de-9667-4ae8-82fa-6e353028ada5']; // jcorrea@quilin.cl
+
+const _ownerCache = new Map();   // licId -> owner_id | null
+
+// Extrae el id de licitación (lic_XXXX_YYYY) que llevan dentro todos los
+// registros asociados a un proyecto: licitacion_, doc_, chat_, analisis_, ...
+function _licIdDeRegistro(recId) {
+  const m = String(recId || '').match(/lic_[A-Za-z0-9]+_[A-Za-z0-9]+/);
+  return m ? m[0] : null;
+}
+
+// Devuelve el owner_id que le corresponde a un registro (null = compartido).
+async function _ownerDeRegistro(recId) {
+  const licId = _licIdDeRegistro(recId);
+  if (!licId) return null;                       // datos globales -> compartidos
+  if (_ownerCache.has(licId)) return _ownerCache.get(licId);
+  let owner = null, existe = false;
+  try {
+    const { data } = await supa().from('kv_store')
+      .select('owner_id').eq('user_id', TEAM_ID)
+      .eq('id', 'licitacion_' + licId).maybeSingle();
+    if (data) { existe = true; owner = data.owner_id || null; }
+  } catch (e) { /* si falla la consulta, tratar como compartido */ }
+  if (!existe) {
+    // Licitación nueva: aplica la regla del usuario que la está creando.
+    try {
+      const uid = await _supaUserId();
+      if (PRIVAR_NUEVOS_DE.includes(uid)) owner = uid;
+    } catch (e) { owner = null; }
+  }
+  _ownerCache.set(licId, owner);
+  return owner;
+}
+
+// Marca (o desmarca) un proyecto completo como privado. owner=null lo comparte.
+async function establecerPrivacidadLicitacion(licId, owner) {
+  const { error } = await supa().from('kv_store')
+    .update({ owner_id: owner || null })
+    .eq('user_id', TEAM_ID).like('id', '%' + licId + '%');
+  if (error) throw error;
+  _ownerCache.set(licId, owner || null);
+}
+
 async function dbPut(record) {
   if (!record || record.id == null) throw new Error('dbPut: record sin id.');
   const { data, blobs } = _splitRecord(record);
@@ -10041,8 +10093,9 @@ async function dbPut(record) {
   for (const b of blobs) {
     data[b.prop] = await _supaUploadBlob(record.id, b.prop, b.blob);
   }
+  const owner_id = await _ownerDeRegistro(record.id);
   const { error } = await supa().from('kv_store')
-    .upsert({ user_id: TEAM_ID, id: String(record.id), data }, { onConflict: 'user_id,id' });
+    .upsert({ user_id: TEAM_ID, id: String(record.id), data, owner_id }, { onConflict: 'user_id,id' });
   if (error) throw error;
 }
 
@@ -26817,11 +26870,24 @@ async function dbPutLicitacion(lic) {
 async function dbGetAllLicitaciones() {
   // Filtra en el servidor (solo trae registros licitacion_*, no los 158).
   // Las licitaciones no tienen Blobs, así que devolvemos data directo.
+  // owner_id != null  =>  proyecto privado (solo visible para su dueño).
   const { data, error } = await supa().from('kv_store')
-    .select('data').eq('user_id', TEAM_ID).like('id', 'licitacion_%');
+    .select('id,data,owner_id').eq('user_id', TEAM_ID).like('id', 'licitacion_%');
   if (error) throw error;
+  LICS_PRIVADAS.clear();
+  for (const row of (data || [])) {
+    const licId = _licIdDeRegistro(row.id);
+    if (licId) _ownerCache.set(licId, row.owner_id || null);
+    if (row.owner_id && row.data) {
+      const rid = row.data.originalId || String(row.id).replace('licitacion_', '');
+      LICS_PRIVADAS.add(rid);
+    }
+  }
   return (data || []).map(row => row.data).filter(Boolean);
 }
+
+// Ids de licitaciones privadas (solo para pintar el candado en el panel).
+const LICS_PRIVADAS = new Set();
 async function dbDeleteLicitacion(licId) {
   // Borrar la licitación + todos sus docs + su chat + análisis.
   // Filtra en el servidor (solo trae los ids relacionados, no los 158).
@@ -27079,7 +27145,7 @@ function construirFilaLicitacion({lic, enr}) {
       <span class="expand-chevron">▶</span>
     </td>
     <td>
-      <div class="td-primary">${escapeHtml(lic.numero || 'Sin número')}</div>
+      <div class="td-primary">${LICS_PRIVADAS.has(lic.id) ? '<span title="Proyecto privado: solo visible para ti" style="margin-right:4px;">🔒</span>' : ''}${escapeHtml(lic.numero || 'Sin número')}</div>
       <div class="td-secondary">${escapeHtml(lic.mandante || 'Sin mandante')}</div>
     </td>
     <td>
@@ -35289,6 +35355,7 @@ function _cablearAuth() {
   const em = $('authEmail'); if (em) em.addEventListener('keydown', e => { if (e.key === 'Enter') { const p=$('authPassword'); if(p) p.focus(); } });
   const out = $('globalLogoutBtn');
   if (out) out.addEventListener('click', async () => {
+    try { _ownerCache.clear(); } catch(e){}
     try { await supa().auth.signOut(); } catch(e){}
     location.reload();
   });
