@@ -6697,7 +6697,7 @@
               <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
             </div>
             <strong>Arrastra o haz clic para agregar documentos</strong>
-            <span class="hint">PDF, Word, Excel, Markdown, imágenes · máx. 50 MB por archivo</span>
+            <span class="hint">PDF, Word, Excel, Markdown, imágenes · máx. 90 MB por archivo</span>
           </label>
           <input type="file" id="docInput" accept=".pdf,.doc,.docx,.xlsx,.xls,.txt,.md,.markdown,.png,.jpg,.jpeg" multiple />
 
@@ -9887,7 +9887,7 @@ function abrirModalEditarPrecios(pozoId, onSaved) {
 const DB_NAME = 'apu_licitacion_db';
 const DB_VERSION = 1;
 const DB_STORE = 'docs';
-const TAMANO_MAX_MB = 50;
+const TAMANO_MAX_MB = 90;
 
 // --- Supabase wrapper (reemplaza IndexedDB; misma firma) ---
 // Persistencia en la nube + multiusuario. Cada registro vive en la tabla
@@ -20563,7 +20563,7 @@ function renderPaso2Estructura(body) {
                 <input type="file" multiple data-upload="${sec.id}|${sub.id}" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.mpp,.mpx,.png,.jpg,.jpeg,.gif,.webp,.svg,.txt,.csv">
                 <span>+ Subir archivos</span>
               </label>
-              <div class="met-upload-hint">PDF · Word · Excel · PowerPoint · Project · imágenes (máx 5MB c/u)</div>
+              <div class="met-upload-hint">PDF · Word · Excel · PowerPoint · Project · imágenes (máx 90MB c/u)</div>
             </div>
             <div class="met-sub-col">
               <div class="met-sub-coltitle">🔗 Referenciar documentos cargados</div>
@@ -20917,8 +20917,8 @@ function renderPaso2Estructura(body) {
       if (!sub) return;
       const files = Array.from(e.target.files || []);
       for (const f of files) {
-        if (f.size > 5 * 1024 * 1024) {
-          alert(`"${f.name}" supera 5MB y será omitido.`);
+        if (f.size > TAMANO_MAX_MB * 1024 * 1024) {
+          alert(`"${f.name}" supera ${TAMANO_MAX_MB}MB y será omitido.`);
           continue;
         }
         try {
@@ -33940,7 +33940,7 @@ async function renderVerificarView() {
     html += '<input type="file" id="vpUploadInput" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx" style="display:none;">';
     html += '<div class="vp-upload-ico">📥</div>';
     html += '<div class="vp-upload-text"><strong>Click acá para cargar tu propuesta</strong><br>O arrastra el archivo aquí</div>';
-    html += '<div class="vp-upload-hint">PDF · Word · Excel · PowerPoint (máx 10MB)</div>';
+    html += '<div class="vp-upload-hint">PDF · Word · Excel · PowerPoint (máx 90MB)</div>';
     html += '</label>';
   }
   html += '</div>';
@@ -34329,8 +34329,8 @@ function attachVerificarListeners() {
 
 // Carga un archivo de propuesta
 async function cargarPropuestaVerificacion(file) {
-  if (file.size > 10 * 1024 * 1024) {
-    alert('El archivo supera los 10MB. Por favor reduce el tamaño o divide en varios.');
+  if (file.size > TAMANO_MAX_MB * 1024 * 1024) {
+    alert(`El archivo supera los ${TAMANO_MAX_MB}MB. Por favor reduce el tamaño o divide en varios.`);
     return;
   }
   try {
