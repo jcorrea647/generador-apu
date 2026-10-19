@@ -5455,14 +5455,21 @@
   .met-regen-btn.is-loading { background: #FEF3C7; color: #92400E; }
   /* Selector "📘" para exportar capítulos elegidos a Word (independiente del check de generación) */
   .met-word-sel {
-    background: var(--surface); color: #1E40AF; border: 1px dashed #93C5FD;
-    font-size: 11px; padding: 4px 10px; border-radius: 99px; font-weight: 700;
-    flex-shrink: 0; white-space: nowrap; cursor: pointer;
+    background: var(--surface); color: #1E40AF; border: 1.5px dashed #93C5FD;
+    font-size: 12.5px; padding: 5px 12px 5px 9px; border-radius: 99px; font-weight: 700;
+    flex-shrink: 0; white-space: nowrap; cursor: pointer; font-family: inherit;
+    display: inline-flex; align-items: center; gap: 7px; line-height: 1;
     transition: background 0.15s, transform 0.1s, border-color 0.15s;
   }
+  .met-word-box {
+    width: 17px; height: 17px; border-radius: 4px; border: 2px solid #60A5FA; background: #fff;
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    font-size: 12px; font-weight: 800; color: #fff; box-sizing: border-box;
+  }
+  .met-word-sel.is-on .met-word-box { background: #2563EB; border-color: #2563EB; }
   .met-word-sel:hover { background: #EFF6FF; }
   .met-word-sel:active { transform: scale(0.96); }
-  .met-word-sel.is-on { background: #DBEAFE; border: 1px solid #3B82F6; color: #1E3A8A; }
+  .met-word-sel.is-on { background: #DBEAFE; border: 1.5px solid #3B82F6; color: #1E3A8A; }
   .met-seccion.is-word-sel { box-shadow: inset 3px 0 0 #3B82F6; }
   .met-word-bar {
     margin-top: 14px; padding: 10px 12px; border: 1px solid #BFDBFE; background: #EFF6FF;
@@ -21021,7 +21028,7 @@ function renderPaso2Estructura(body) {
           </label>
           <span class="met-sec-icon">${sec.icon || '📄'}</span>
           <input type="text" class="met-sec-label" value="${escapeHtml(sec.label)}" data-rename-sec="${sec.id}">
-          ${metodologiaSeccionGenerada(sec.id) ? `<button class="met-word-sel ${METODOLOGIA_STATE.seleccionWord[sec.id] ? 'is-on' : ''}" data-word-sel="${sec.id}" title="Marcar este capítulo para descargarlo en Word junto con otros">${METODOLOGIA_STATE.seleccionWord[sec.id] ? '☑' : '☐'} 📘</button>` : ''}
+          ${metodologiaSeccionGenerada(sec.id) ? `<button class="met-word-sel ${METODOLOGIA_STATE.seleccionWord[sec.id] ? 'is-on' : ''}" data-word-sel="${sec.id}" title="Marcar este capítulo para descargarlo en Word junto con otros"><span class="met-word-box">${METODOLOGIA_STATE.seleccionWord[sec.id] ? '✓' : ''}</span>Word</button>` : ''}
           ${metodologiaSeccionGenerada(sec.id) ? `<button class="met-ver-btn" data-ver-sec="${sec.id}" title="Ver y editar el contenido generado de esta sección">👁 Ver</button>` : ''}
           ${(() => {
             const regenerando = METODOLOGIA_STATE.regenSecId === sec.id;
@@ -21115,7 +21122,7 @@ function renderPaso2Estructura(body) {
       const nSel = generadas.filter(s => METODOLOGIA_STATE.seleccionWord[s.id]).length;
       const todas = nSel === generadas.length;
       return `<div class="met-word-bar">
-        <span>📘 <strong>Exportar a Word:</strong> ${nSel ? `${nSel} capítulo(s) seleccionado(s)` : 'marca con ☐ 📘 los capítulos que quieres'}</span>
+        <span>📘 <strong>Exportar a Word:</strong> ${nSel ? `${nSel} capítulo(s) seleccionado(s)` : 'marca la casilla "Word" de los capítulos que quieres'}</span>
         <button class="met-word-link" id="metWordSelTodos">${todas ? 'Quitar selección' : `Seleccionar los ${generadas.length} generados`}</button>
         <button class="met-word-go" id="metWordDescargarSel" ${nSel ? '' : 'disabled'}>⬇ Descargar ${nSel || ''} en Word</button>
       </div>`;
