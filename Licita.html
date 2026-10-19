@@ -23812,6 +23812,88 @@ Antes de redactar, recorre TODOS los documentos entregados (Bases Técnicas, Bas
 
 // opts.soloIds: array de ids de sección → exporta SOLO esos capítulos (con portada y antecedentes),
 // sin importar el check de generación. Sin opts → comportamiento original (secciones activas).
+// === Índice pre-armado ===
+// Word para Mac (y Word en general si el usuario responde "No") no actualiza el campo TOC al abrir,
+// y el índice aparece vacío. Esta función abre el .docx ya generado y escribe DENTRO del campo TOC
+// las entradas reales (título + n° de página estimado + enlace), marcando cada título con un
+// marcador (_TocN). El campo sigue siendo un índice nativo: clic derecho → Actualizar campo
+// recalcula los números exactos y agrega títulos nuevos.
+async function _rellenarIndiceDocx(blob) {
+  if (typeof JSZip === 'undefined') return blob;
+  const zip = await JSZip.loadAsync(blob);
+  const f = zip.file('word/document.xml');
+  if (!f) return blob;
+  let xml = await f.async('string');
+  const iSdt = xml.indexOf('<w:sdt>');
+  const iSdtFin = xml.indexOf('</w:sdt>', iSdt);
+  if (iSdt < 0 || iSdtFin < 0 || xml.indexOf('TOC ', iSdt) > iSdtFin) return blob;
+  const finSdt = iSdtFin + '</w:sdt>'.length;
+
+  const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const textoDe = (frag) => (frag.match(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g) || [])
+    .map(x => x.replace(/<[^>]+>/g, '')).join('')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+
+  // --- 1) Recorrer el cuerpo posterior al índice: marcar títulos y estimar páginas ---
+  const ALTO_PAGINA = 16838 - 2880;   // A4 menos márgenes (twips)
+  const CHARS_LINEA = 115;            // calibrado contra el índice real (Calibri 11 justificado, A4)
+  const cuerpo = xml.slice(finSdt);
+  const entradas = [];
+  let nb = 0;
+  // Primero contamos cuántos títulos habrá, para saber cuántas páginas ocupa el índice
+  const nTitulos = (cuerpo.match(/<w:pStyle w:val="Heading[12]"\/>/g) || []).length;
+  const paginasIndice = Math.max(1, Math.ceil((nTitulos * 330) / ALTO_PAGINA));
+  let pagina = 2 + paginasIndice - 1;   // portada = 1, índice empieza en 2
+  let usado = ALTO_PAGINA;              // fuerza que el primer salto de página sume
+  const nuevoCuerpo = cuerpo.replace(/<w:tbl>[\s\S]*?<\/w:tbl>|<w:p>[\s\S]*?<\/w:p>|<w:p [\s\S]*?<\/w:p>/g, (bloque) => {
+    if (bloque.startsWith('<w:tbl>')) {
+      const filas = (bloque.match(/<w:tr[ >]/g) || []).length;
+      usado += filas * 320;
+      while (usado > ALTO_PAGINA) { pagina++; usado -= ALTO_PAGINA; }
+      return bloque;
+    }
+    const txt = textoDe(bloque);
+    const nivel = /<w:pStyle w:val="Heading1"\/>/.test(bloque) ? 1 : /<w:pStyle w:val="Heading2"\/>/.test(bloque) ? 2 : /<w:pStyle w:val="Heading3"\/>/.test(bloque) ? 3 : 0;
+    const alto = nivel === 1 ? 830 : nivel === 2 ? 740 : nivel === 3 ? 570
+      : Math.max(1, Math.ceil(txt.length / CHARS_LINEA)) * 335 + 120;
+    if (/<w:pageBreakBefore\/>/.test(bloque)) { pagina++; usado = 0; }
+    else if (usado + alto > ALTO_PAGINA) { pagina++; usado = 0; }
+    usado += alto;
+    if ((nivel === 1 || nivel === 2) && txt.trim()) {
+      nb++;
+      const nombre = `_Toc${String(900000 + nb)}`;
+      entradas.push({ nivel, texto: txt.trim(), nombre, pagina });
+      const conIni = bloque.includes('</w:pPr>')
+        ? bloque.replace('</w:pPr>', `</w:pPr><w:bookmarkStart w:id="${8000 + nb}" w:name="${nombre}"/>`)
+        : bloque.replace(/^<w:p( [^>]*)?>/, (m) => `${m}<w:bookmarkStart w:id="${8000 + nb}" w:name="${nombre}"/>`);
+      return conIni.replace(/<\/w:p>$/, `<w:bookmarkEnd w:id="${8000 + nb}"/></w:p>`);
+    }
+    return bloque;
+  });
+  if (!entradas.length) return blob;
+
+  // --- 2) Escribir las entradas dentro del campo TOC (entre "separate" y "end") ---
+  const ANCHO = 11906 - 2880;
+  const filasXml = entradas.map(e => {
+    const rPr = e.nivel === 1 ? '<w:rPr><w:b/><w:bCs/></w:rPr>' : '';
+    return `<w:p><w:pPr><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="${ANCHO}"/></w:tabs>`
+      + `<w:spacing w:before="${e.nivel === 1 ? 120 : 0}" w:after="40"/><w:ind w:left="${e.nivel === 1 ? 0 : 440}"/></w:pPr>`
+      + `<w:hyperlink w:anchor="${e.nombre}" w:history="1">`
+      + `<w:r>${rPr}<w:t xml:space="preserve">${esc(e.texto)}</w:t></w:r><w:r>${rPr}<w:tab/></w:r>`
+      + `<w:r>${rPr}<w:fldChar w:fldCharType="begin"/></w:r><w:r>${rPr}<w:instrText xml:space="preserve"> PAGEREF ${e.nombre} \\h </w:instrText></w:r>`
+      + `<w:r>${rPr}<w:fldChar w:fldCharType="separate"/></w:r><w:r>${rPr}<w:t>${e.pagina}</w:t></w:r><w:r>${rPr}<w:fldChar w:fldCharType="end"/></w:r>`
+      + `</w:hyperlink></w:p>`;
+  }).join('');
+  let sdt = xml.slice(iSdt, finSdt);
+  const marcaSep = '<w:fldChar w:fldCharType="separate"/></w:r></w:p>';
+  if (!sdt.includes(marcaSep)) return blob;
+  sdt = sdt.replace(marcaSep, marcaSep + filasXml);
+
+  xml = xml.slice(0, iSdt) + sdt + nuevoCuerpo;
+  zip.file('word/document.xml', xml);
+  return await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+}
+
 async function construirYDescargarWord(contenidoSecciones, opts = {}) {
   const soloIds = Array.isArray(opts.soloIds) && opts.soloIds.length ? new Set(opts.soloIds) : null;
   if (typeof docx === 'undefined') {
@@ -24046,7 +24128,9 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
     }],
   });
 
-  const blob = await Packer.toBlob(doc);
+  let blob = await Packer.toBlob(doc);
+  // Escribir el índice ya armado dentro del archivo (si algo falla, queda el campo vacío actualizable)
+  try { blob = await _rellenarIndiceDocx(blob); } catch (e) { console.warn('No se pudo pre-armar el índice:', e); }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
