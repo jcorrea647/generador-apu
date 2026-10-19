@@ -23817,7 +23817,7 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
   if (typeof docx === 'undefined') {
     throw new Error('Librería docx no cargada. Verifica conexión a CDN.');
   }
-  const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } = docx;
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle, TableOfContents } = docx;
 
   const empresa = METODOLOGIA_STATE.empresa;
   const lic = APP_STATE.licitaciones.find(l => l.id === APP_STATE.currentLicId);
@@ -23879,6 +23879,20 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
       children: [new TextRun({text: empresa.direccion, size: 18})],
       alignment: AlignmentType.RIGHT,
       pageBreakBefore: false,
+    }));
+  }
+
+  // ===== ÍNDICE (campo TOC nativo de Word: se actualiza con clic derecho → "Actualizar campo") =====
+  // Toma los títulos de capítulo (Título 1) y sus subtítulos (Título 2).
+  if (TableOfContents) {
+    children.push(new Paragraph({
+      children: [new TextRun({text: 'Índice', bold: true, size: 32, color: '1F3D2E'})],
+      pageBreakBefore: true,
+      spacing: {before: 200, after: 240},
+    }));
+    children.push(new TableOfContents('Índice', {
+      hyperlink: true,
+      headingStyleRange: '1-2',
     }));
   }
 
@@ -24011,11 +24025,17 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
     creator: empresa.nombre || 'Generador APU',
     title: `Metodología - ${nombreLic}`,
     description: 'Propuesta técnica generada automáticamente',
+    // Pide a Word actualizar los campos al abrir, para que el índice aparezca ya armado
+    features: { updateFields: true },
     styles: {
       default: {
         document: {
           run: {font: 'Calibri', size: 22},
         },
+        // Nivel de esquema en los títulos: es lo que lee el índice (Word y LibreOffice)
+        heading1: { run: {font: 'Calibri', color: '1F3D2E', bold: true}, paragraph: {outlineLevel: 0} },
+        heading2: { run: {font: 'Calibri', color: '1F3D2E', bold: true}, paragraph: {outlineLevel: 1} },
+        heading3: { run: {font: 'Calibri', color: '1F3D2E', bold: true}, paragraph: {outlineLevel: 2} },
       },
     },
     sections: [{
