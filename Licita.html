@@ -21135,7 +21135,7 @@ function renderPaso2Estructura(body) {
 
     <div style="margin-top:14px; padding:10px 12px; background:var(--surface-warm); border-radius:8px; font-size:11.5px; color:var(--text-soft);">
       <strong style="color:var(--accent);">Resumen:</strong> ${totalActivas} de ${est.length} secciones activas.
-      Tiempo estimado: ~${totalActivas*8}-${totalActivas*12}s. Costo aprox: <strong>$${(totalActivas*0.012).toFixed(3)}-${(totalActivas*0.02).toFixed(3)} USD</strong> con Gemini Flash.
+      Tiempo estimado: ~${totalActivas*8}-${totalActivas*12}s. Costo aprox: <strong>$${(totalActivas*0.10).toFixed(2)}-${(totalActivas*0.25).toFixed(2)} USD</strong> con ${(MODELS[metodologiaModelKey()]||{}).label || 'IA'} (solo se cobra lo que se genera).
     </div>
   `;
 
@@ -21684,11 +21684,14 @@ async function descargarSeccionMetodologiaWord(secId) {
       }));
       continue;
     }
-    const bulletMatch = linea.match(/^[-*]\s+(.+)$/);
+    // Viñetas (-, * o •; con sangría = segundo nivel): mismo justificado e interlineado que el texto normal
+    const bulletMatch = linea.match(/^(\s*)[-*•]\s+(.+)$/);
     if (bulletMatch) {
       children.push(new Paragraph({
-        children: parsearInlineBold(bulletMatch[1]),
-        bullet: { level: 0 }, spacing: { after: 60 },
+        children: parsearInlineBold(bulletMatch[2]),
+        bullet: { level: bulletMatch[1].length >= 2 ? 1 : 0 },
+        spacing: { after: 120, line: 300 },
+        alignment: AlignmentType.JUSTIFIED,
       }));
       continue;
     }
@@ -22477,7 +22480,7 @@ function renderPaso3Generar(body) {
         Faltan por generar con IA: <strong>${pendientes}</strong><br>
         Subsecciones totales: <strong>${totalSubs}</strong><br>
         Archivos cargados: <strong>${totalArc}</strong> · Referencias a docs: <strong>${totalRefs}</strong><br>
-        Modelo: <strong>${(MODELS[chatState.currentModel]||{}).label || chatState.currentModel}</strong>
+        Modelo: <strong>${(MODELS[metodologiaModelKey()]||{}).label || metodologiaModelKey()}</strong>
       </div>
     </div>
 
@@ -23163,6 +23166,50 @@ async function sugerirEstructuraMetodologia(body) {
   }
 }
 
+// Modelo usado para redactar la metodología: Gemini Pro si hay API key de Google
+// (barre mejor documentos largos y no se salta requisitos); si no, el modelo activo del chat.
+function metodologiaModelKey() {
+  if (chatState.googleApiKey && MODELS['gemini-pro']) return 'gemini-pro';
+  return chatState.currentModel;
+}
+
+// Qué análisis de "Análisis Licitación" sirven de apoyo para cada sección, según su nombre.
+// Devuelve un bloque de texto con la última versión de cada análisis relevante (o '' si no hay).
+const MET_APOYO_ANALISIS = [
+  { re: /ambient|sustentab|residuo|circularid|hidric|emision|huella|carbono|energia|esg/, ids: ['ambiental', 'estandar-minero'] },
+  { re: /seguridad|salud|prevencion|hsec|sso|riesgo|emergencia/, ids: ['estandar-minero', 'riesgos-contrato'] },
+  { re: /calidad|ensayo|inspeccion|control de avance|entregable|reporte|informe/, ids: ['estandar-minero', 'bases-tecnicas'] },
+  { re: /planific|programa|gantt|cronograma|plazo|hito|avance|entregable/, ids: ['plazos-contrato'] },
+  { re: /organiz|recurso|personal|dotacion|equipo|maquinaria|organigrama/, ids: ['personal'] },
+  { re: /objetivo|alcance|metodolog|ejecucion|construccion|partida|obras|servicio/, ids: ['bases-tecnicas'] },
+  { re: /comunidad|social|relacion|stakeholder|local/, ids: ['estandar-minero', 'ambiental'] },
+];
+function metNormTxt(t) { return String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
+function apoyoAnalisisParaSeccion(labelSec, subLabels = []) {
+  if (typeof analisisState === 'undefined' || !analisisState.versiones || typeof ANALISIS_DEFS === 'undefined') return '';
+  const texto = metNormTxt([labelSec, ...subLabels].join(' '));
+  const ids = [];
+  for (const regla of MET_APOYO_ANALISIS) {
+    if (regla.re.test(texto)) regla.ids.forEach(id => { if (!ids.includes(id)) ids.push(id); });
+  }
+  // Las respuestas a consultas tienen prioridad sobre las bases: siempre se adjuntan si existen
+  ids.push('consultas-analisis');
+  const MAX_CHARS = 15000;
+  const bloques = [];
+  for (const id of ids) {
+    const vers = analisisState.versiones[id];
+    if (!Array.isArray(vers) || !vers.length) continue;
+    const ultima = vers[vers.length - 1];
+    let md = String(ultima?.contenido || '').trim();
+    if (!md || md.startsWith('{') || md.startsWith('[')) continue; // análisis estructurados (JSON) no aplican
+    if (md.length > MAX_CHARS) md = md.slice(0, MAX_CHARS) + '\n… [recortado]';
+    const def = ANALISIS_DEFS.find(d => d.id === id);
+    bloques.push(`--- Análisis: ${def?.titulo || id} ---\n${md}`);
+  }
+  if (!bloques.length) return '';
+  return `\n\n=== APOYO: ANÁLISIS PREVIOS DE ESTA LICITACIÓN ===\nEstos análisis ya fueron extraídos de las mismas bases. Úsalos como CHECKLIST para no omitir requisitos y para ubicar sus citas. Si algo de aquí contradice las bases o las respuestas a consultas, mandan las bases/consultas. No copies el formato de estos análisis; redacta en tono de propuesta técnica.\n\n${bloques.join('\n\n')}\n=== FIN APOYO ===`;
+}
+
 async function generarSeccionMetodologia(seccionId, opts = {}) {
   // opts.iterarPrompt: si viene, NO se construye el prompt base; se continúa la
   // conversación existente de la sección con esa nueva instrucción/pregunta.
@@ -23512,7 +23559,7 @@ Legislación ambiental chilena vigente, normativa sectorial, exigencias contract
 
   const largoRegla = (seccionId === 'metodologia' || seccionId === 'recursos')
     ? 'Largo: ESTA SECCIÓN DEBE SER EXTENSA. No la limites por economía. Mínimo 1500 palabras, ideal 2500-5000 palabras. Desarrolla cada apartado en profundidad. NUNCA truncar.'
-    : 'Largo: 400-800 palabras por sección, técnico y denso.';
+    : 'Largo: el necesario para cubrir TODOS los requisitos de las bases relacionados con esta sección (como referencia 600-1500 palabras; más si las bases exigen más). Técnico y denso, sin relleno. NUNCA omitas un requisito para acortar.';
 
   // Buscar la sección en la estructura (puede ser default o custom agregada por usuario)
   const seccionData = METODOLOGIA_STATE.estructura.find(s => s.id === seccionId);
@@ -23561,6 +23608,7 @@ Si la sección tiene subsecciones definidas por el usuario, organiza el contenid
         contextoSubs += '\n  📚 MODO RESTRICTIVO (solo bases): Para esta subsección, IGNORA cualquier archivo o referencia listada arriba. Usa ÚNICAMENTE las bases técnicas de la licitación como fuente.';
       }
     }
+    contextoSubs += '\n\nSi en las bases hay requisitos de esta sección que no calzan en ninguna de estas subsecciones, NO los omitas: agrégalos en un apartado final "#### Otros requisitos de las bases" (antes del cierre de cumplimiento).';
     if (hayRestricciones) {
       contextoSubs += '\n\nIMPORTANTE: Respeta los modos de cada subsección. Las marcadas como MODO RESTRICTIVO deben generarse siguiendo estrictamente su restricción. Mantén una separación entre lo que viene de bases técnicas y lo que viene de archivos específicos del usuario.';
     }
@@ -23572,10 +23620,19 @@ Si la sección tiene subsecciones definidas por el usuario, organiza el contenid
     instruccionSeccion = `\n\n=== INSTRUCCIONES DE CONTEXTO DEL USUARIO (PRIORIDAD ALTA) ===\nEl usuario entregó las siguientes instrucciones específicas para esta sección. Respétalas estrictamente; en caso de conflicto con el guion genérico, PREVALECEN estas instrucciones (salvo que contradigan las bases técnicas oficiales, las que siempre mandan en datos del proyecto):\n"${seccionData.instruccion.trim()}"\n=== FIN INSTRUCCIONES DE CONTEXTO ===`;
   }
 
-  const prompt = basePrompt + instruccionSeccion + contextoSubs + `\n\nREGLAS CRÍTICAS:\n- Tono profesional, propio de una propuesta técnica formal chilena.\n- Usa headings markdown ### y #### dentro de tu respuesta.\n- NO incluyas el título de sección (### I. OBJETIVO Y ALCANCE) — empieza directo con el contenido o subsecciones.\n- NO inventes datos. Si algo no está en las bases técnicas, omítelo o sé genérico.\n- ${largoRegla}`;
+  const apoyoAnalisis = apoyoAnalisisParaSeccion(labelSec, (seccionData?.subsecciones || []).map(x => x.label));
+  const barridoRequisitos = `\n\n=== BARRIDO OBLIGATORIO DE REQUISITOS ===
+Antes de redactar, recorre TODOS los documentos entregados (Bases Técnicas, Bases Administrativas, anexos, formularios y respuestas a consultas) e identifica CADA requisito, obligación, plan, entregable, compromiso o estándar relacionado con el tema de esta sección ("${labelSec}"), aunque esté en capítulos distintos o mencionado de pasada.
+- La sección debe abordar TODOS esos requisitos, uno por uno, explicando cómo la empresa los cumplirá. No elijas solo los más importantes.
+- Si el requisito exige presentar un plan o documento específico (ej. "Plan de Circularidad y Reciclaje", "Plan de Gestión Hídrica"), nómbralo con ese nombre exacto y describe su contenido.
+- Si las respuestas a consultas modifican un requisito, usa la versión de las consultas.
+- AL FINAL de la sección agrega el apartado "#### Cumplimiento de requisitos de las bases" con una viñeta por requisito, en este formato exacto: "- **<requisito>** (<documento, sección/página>): abordado en <apartado de esta sección>." Debe listar todos los requisitos identificados.
+=== FIN BARRIDO ===`;
+  const prompt = basePrompt + instruccionSeccion + contextoSubs + apoyoAnalisis + barridoRequisitos + `\n\nREGLAS CRÍTICAS:\n- Tono profesional, propio de una propuesta técnica formal chilena.\n- Usa headings markdown ### y #### dentro de tu respuesta.\n- NO incluyas el título de sección (### I. OBJETIVO Y ALCANCE) — empieza directo con el contenido o subsecciones.\n- NO inventes datos. Si algo no está en las bases técnicas, omítelo o sé genérico.\n- ${largoRegla}`;
 
-  const provider = MODELS[chatState.currentModel].provider;
-  const cfg = MODELS[chatState.currentModel];
+  const _metModel = metodologiaModelKey();
+  const provider = MODELS[_metModel].provider;
+  const cfg = MODELS[_metModel];
 
   // Bucle de auto-continuación: si la respuesta queda cortada por max_tokens,
   // pide al modelo que continúe EXACTAMENTE donde quedó, hasta MAX_CONTINUACIONES.
@@ -23919,13 +23976,15 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
         continue;
       }
       // Bullet (- ó *)
-      const bulletMatch = linea.match(/^[-*]\s+(.+)$/);
+      // Viñetas (-, * o •; con sangría = segundo nivel): mismo justificado e interlineado que el texto normal
+      const bulletMatch = linea.match(/^(\s*)[-*•]\s+(.+)$/);
       if (bulletMatch) {
-        const txt = bulletMatch[1];
+        const txt = bulletMatch[2];
         children.push(new Paragraph({
           children: parsearInlineBold(txt),
-          bullet: {level: 0},
-          spacing: {after: 60},
+          bullet: {level: bulletMatch[1].length >= 2 ? 1 : 0},
+          spacing: {after: 120, line: 300},
+          alignment: AlignmentType.JUSTIFIED,
         }));
         enLista = true;
         continue;
