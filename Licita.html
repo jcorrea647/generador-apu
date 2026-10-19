@@ -5453,6 +5453,26 @@
   .met-regen-btn.is-loading,
   .met-regen-btn:disabled { opacity: 0.7; cursor: default; }
   .met-regen-btn.is-loading { background: #FEF3C7; color: #92400E; }
+  /* Selector "📘" para exportar capítulos elegidos a Word (independiente del check de generación) */
+  .met-word-sel {
+    background: var(--surface); color: #1E40AF; border: 1px dashed #93C5FD;
+    font-size: 11px; padding: 4px 10px; border-radius: 99px; font-weight: 700;
+    flex-shrink: 0; white-space: nowrap; cursor: pointer;
+    transition: background 0.15s, transform 0.1s, border-color 0.15s;
+  }
+  .met-word-sel:hover { background: #EFF6FF; }
+  .met-word-sel:active { transform: scale(0.96); }
+  .met-word-sel.is-on { background: #DBEAFE; border: 1px solid #3B82F6; color: #1E3A8A; }
+  .met-seccion.is-word-sel { box-shadow: inset 3px 0 0 #3B82F6; }
+  .met-word-bar {
+    margin-top: 14px; padding: 10px 12px; border: 1px solid #BFDBFE; background: #EFF6FF;
+    border-radius: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    font-size: 12px; color: #1E3A8A;
+  }
+  .met-word-bar button { font-family: inherit; font-size: 12px; border-radius: 7px; padding: 6px 12px; cursor: pointer; font-weight: 600; }
+  .met-word-bar .met-word-link { background: transparent; border: none; color: #1D4ED8; padding: 4px 6px; text-decoration: underline; }
+  .met-word-bar .met-word-go { background: #1D4ED8; color: white; border: 1px solid #1D4ED8; margin-left: auto; }
+  .met-word-bar .met-word-go:disabled { opacity: 0.45; cursor: default; }
   /* Modal del visor de sección */
   .met-visor-overlay {
     position: fixed; inset: 0; z-index: 10000;
@@ -20604,6 +20624,7 @@ const METODOLOGIA_STATE = {
   iterandoSeccion: null, // seccionId que se está regenerando ahora mismo (o null)
   regenSecId: null,      // seccionId que se está (re)generando a pedido desde el Paso 1 (o null)
   faseRevision: false,   // true cuando ya se generó todo y estamos en modo revisión/iteración
+  seleccionWord: {},     // { seccionId: true } capítulos elegidos para exportar a Word (no afecta la generación)
 };
 
 // Estructura DEFAULT (al abrir por primera vez o resetear)
@@ -20705,6 +20726,7 @@ async function cargarMetodologiaDeLicitacion(licId) {
   METODOLOGIA_STATE.expandidas = {};
   METODOLOGIA_STATE.estructuraSugeridaIA = false;
   METODOLOGIA_STATE.estructuraSugeridaIAAt = null;
+  METODOLOGIA_STATE.seleccionWord = {};
 
   if (!licId) return false;
   try {
@@ -20978,7 +21000,7 @@ function renderPaso2Estructura(body) {
     ` : '';
 
     return `
-      <div class="met-seccion ${expandida ? 'is-expanded' : ''}" data-sec="${sec.id}">
+      <div class="met-seccion ${expandida ? 'is-expanded' : ''} ${(METODOLOGIA_STATE.seleccionWord[sec.id] && metodologiaSeccionGenerada(sec.id)) ? 'is-word-sel' : ''}" data-sec="${sec.id}">
         <div class="met-sec-header">
           <button class="met-mover" data-mov-sec="${idx}|-1" title="Subir" ${idx===0?'disabled':''}>↑</button>
           <button class="met-mover" data-mov-sec="${idx}|1" title="Bajar" ${idx===est.length-1?'disabled':''}>↓</button>
@@ -20988,6 +21010,7 @@ function renderPaso2Estructura(body) {
           </label>
           <span class="met-sec-icon">${sec.icon || '📄'}</span>
           <input type="text" class="met-sec-label" value="${escapeHtml(sec.label)}" data-rename-sec="${sec.id}">
+          ${metodologiaSeccionGenerada(sec.id) ? `<button class="met-word-sel ${METODOLOGIA_STATE.seleccionWord[sec.id] ? 'is-on' : ''}" data-word-sel="${sec.id}" title="Marcar este capítulo para descargarlo en Word junto con otros">${METODOLOGIA_STATE.seleccionWord[sec.id] ? '☑' : '☐'} 📘</button>` : ''}
           ${metodologiaSeccionGenerada(sec.id) ? `<button class="met-ver-btn" data-ver-sec="${sec.id}" title="Ver y editar el contenido generado de esta sección">👁 Ver</button>` : ''}
           ${(() => {
             const regenerando = METODOLOGIA_STATE.regenSecId === sec.id;
@@ -21075,6 +21098,18 @@ function renderPaso2Estructura(body) {
 
     <div class="met-estructura-lista">${empresaCard}${seccionesHtml}</div>
 
+    ${(() => {
+      const generadas = est.filter(s => metodologiaSeccionGenerada(s.id));
+      if (!generadas.length) return '';
+      const nSel = generadas.filter(s => METODOLOGIA_STATE.seleccionWord[s.id]).length;
+      const todas = nSel === generadas.length;
+      return `<div class="met-word-bar">
+        <span>📘 <strong>Exportar a Word:</strong> ${nSel ? `${nSel} capítulo(s) seleccionado(s)` : 'marca con ☐ 📘 los capítulos que quieres'}</span>
+        <button class="met-word-link" id="metWordSelTodos">${todas ? 'Quitar selección' : `Seleccionar los ${generadas.length} generados`}</button>
+        <button class="met-word-go" id="metWordDescargarSel" ${nSel ? '' : 'disabled'}>⬇ Descargar ${nSel || ''} en Word</button>
+      </div>`;
+    })()}
+
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px;">
       <button id="metAddSecBtn" class="btn-secondary btn-sm">+ Agregar sección</button>
       <button id="metSugerirEstructuraBtn" class="btn-sm" title="Lee las bases técnicas cargadas y propone un índice de metodología adaptado al tipo de servicio de esta licitación. Conserva tu trabajo por coincidencia de nombre." style="font-size:12px;padding:6px 12px;border:1px solid #047857;border-radius:7px;background:#ECFDF5;color:#047857;font-weight:600;cursor:pointer;font-family:inherit;">⚡ Sugerir estructura según las bases</button>
@@ -21134,6 +21169,45 @@ function renderPaso2Estructura(body) {
       e.stopPropagation();
       abrirVisorSeccionMetodologia(btn.dataset.verSec);
     });
+  });
+  // Selector "☐ 📘": marca/desmarca el capítulo para la exportación a Word
+  body.querySelectorAll('[data-word-sel]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      guardarDatosEmpresaInline();
+      const id = btn.dataset.wordSel;
+      if (METODOLOGIA_STATE.seleccionWord[id]) delete METODOLOGIA_STATE.seleccionWord[id];
+      else METODOLOGIA_STATE.seleccionWord[id] = true;
+      renderPaso2Estructura(body);
+    });
+  });
+  body.querySelector('#metWordSelTodos')?.addEventListener('click', () => {
+    guardarDatosEmpresaInline();
+    const generadas = METODOLOGIA_STATE.estructura.filter(s => metodologiaSeccionGenerada(s.id));
+    const todas = generadas.every(s => METODOLOGIA_STATE.seleccionWord[s.id]);
+    METODOLOGIA_STATE.seleccionWord = {};
+    if (!todas) generadas.forEach(s => { METODOLOGIA_STATE.seleccionWord[s.id] = true; });
+    renderPaso2Estructura(body);
+  });
+  body.querySelector('#metWordDescargarSel')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    // Orden = el de la lista (respeta lo reordenado con ↑↓)
+    const ids = METODOLOGIA_STATE.estructura
+      .filter(s => METODOLOGIA_STATE.seleccionWord[s.id] && metodologiaSeccionGenerada(s.id))
+      .map(s => s.id);
+    if (!ids.length) return;
+    guardarDatosEmpresaInline();
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = '⏳ Construyendo Word…';
+    try {
+      await construirYDescargarWord(METODOLOGIA_STATE.contenidos, { soloIds: ids });
+      btn.textContent = '✓ Descargado';
+    } catch (err) {
+      console.error('Error generando Word de capítulos:', err);
+      alert('No se pudo generar el Word: ' + (err.message || err));
+    } finally {
+      setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 1800);
+    }
   });
   // Botón "🔄 Regenerar / ✨ Generar": (re)genera SOLO esta sección, a pedido
   body.querySelectorAll('[data-regen-sec]').forEach(btn => {
@@ -23658,7 +23732,10 @@ Si la sección tiene subsecciones definidas por el usuario, organiza el contenid
   throw new Error('No hay API key configurada para el modelo activo');
 }
 
-async function construirYDescargarWord(contenidoSecciones) {
+// opts.soloIds: array de ids de sección → exporta SOLO esos capítulos (con portada y antecedentes),
+// sin importar el check de generación. Sin opts → comportamiento original (secciones activas).
+async function construirYDescargarWord(contenidoSecciones, opts = {}) {
+  const soloIds = Array.isArray(opts.soloIds) && opts.soloIds.length ? new Set(opts.soloIds) : null;
   if (typeof docx === 'undefined') {
     throw new Error('Librería docx no cargada. Verifica conexión a CDN.');
   }
@@ -23787,7 +23864,7 @@ async function construirYDescargarWord(contenidoSecciones) {
 
   // SECCIONES
   for (const sec of METODOLOGIA_STATE.estructura) {
-    if (!sec.activa) continue;
+    if (soloIds ? !soloIds.has(sec.id) : !sec.activa) continue;
     const md = contenidoSecciones[sec.id] || '[Sección sin contenido]';
 
     // Page break antes de cada sección
@@ -23874,7 +23951,9 @@ async function construirYDescargarWord(contenidoSecciones) {
   const a = document.createElement('a');
   a.href = url;
   const safeNombre = nombreLic.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
-  a.download = `Metodologia_${safeNombre}.docx`;
+  a.download = soloIds
+    ? `Metodologia_${safeNombre}_${soloIds.size}cap_${new Date().toISOString().slice(0,10)}.docx`
+    : `Metodologia_${safeNombre}.docx`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
