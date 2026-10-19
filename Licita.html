@@ -20860,9 +20860,20 @@ function renderModalMetodologia() {
       if (!validarPasoActual()) return;
       guardarPasoActual();
       METODOLOGIA_STATE.step++;
-      // Si pasamos al paso 2 (Generar), pre-cargar borrador de introducción
-      if (METODOLOGIA_STATE.step === 2 && !METODOLOGIA_STATE.introduccion) {
-        await prepararBorradorIntroduccion();
+      if (METODOLOGIA_STATE.step === 2) {
+        const activas = METODOLOGIA_STATE.estructura.filter(s => s.activa);
+        const todasHechas = activas.length > 0 && activas.every(s => metodologiaSeccionGenerada(s.id));
+        if (todasHechas) {
+          // Todo lo marcado ya está generado: NO se llama a la IA, se pasa directo a revisar y armar el Word
+          METODOLOGIA_STATE.faseRevision = true;
+          if (!activas.some(s => METODOLOGIA_STATE.revisionAbierta[s.id])) {
+            METODOLOGIA_STATE.revisionAbierta[activas[0].id] = true;
+          }
+          guardarMetodologiaActual();
+        } else if (!METODOLOGIA_STATE.introduccion) {
+          // Pre-cargar borrador de introducción
+          await prepararBorradorIntroduccion();
+        }
       }
       renderModalMetodologia();
     });
@@ -22438,6 +22449,8 @@ function renderPaso3Generar(body) {
   // Estado normal: pre-generación con preview de intro
   const activas = METODOLOGIA_STATE.estructura.filter(s => s.activa);
   const total = activas.length;
+  const yaHechas = activas.filter(s => metodologiaSeccionGenerada(s.id)).length;
+  const pendientes = total - yaHechas;
   // Contar archivos totales y referencias
   let totalArc = 0, totalRefs = 0, totalSubs = 0;
   for (const s of METODOLOGIA_STATE.estructura) {
@@ -22459,7 +22472,9 @@ function renderPaso3Generar(body) {
       <div style="font-size:12px; font-weight:600; color:var(--accent); margin-bottom:6px;">📋 Resumen de generación</div>
       <div style="font-size:11.5px; color:var(--text-soft); line-height:1.6;">
         Empresa: <strong>${escapeHtml(METODOLOGIA_STATE.empresa.nombre || '(sin definir)')}</strong><br>
-        Secciones a generar: <strong>${total} de ${METODOLOGIA_STATE.estructura.length}</strong><br>
+        Secciones marcadas: <strong>${total} de ${METODOLOGIA_STATE.estructura.length}</strong><br>
+        Ya generadas (se conservan, no se vuelven a generar): <strong>${yaHechas}</strong><br>
+        Faltan por generar con IA: <strong>${pendientes}</strong><br>
         Subsecciones totales: <strong>${totalSubs}</strong><br>
         Archivos cargados: <strong>${totalArc}</strong> · Referencias a docs: <strong>${totalRefs}</strong><br>
         Modelo: <strong>${(MODELS[chatState.currentModel]||{}).label || chatState.currentModel}</strong>
@@ -22467,7 +22482,7 @@ function renderPaso3Generar(body) {
     </div>
 
     <button id="metGenerateBtn" class="btn-primary" style="width:100%; margin-top:16px; padding:12px; font-size:14px;">
-      📄 Generar documento Word
+      ${pendientes > 0 ? `✨ Generar ${pendientes} sección(es) faltante(s) y continuar` : '📄 Ir a revisar y armar el Word'}
     </button>
   `;
 
@@ -22477,18 +22492,7 @@ function renderPaso3Generar(body) {
   });
   body.querySelector('#metGenerateBtn').addEventListener('click', () => {
     METODOLOGIA_STATE.introduccion = document.getElementById('met_introduccion').value;
-    // Si ya hay secciones generadas y guardadas, avisar antes de sobrescribir todo
-    const seccionesHechas = METODOLOGIA_STATE.estructura
-      .filter(s => s.activa && metodologiaSeccionGenerada(s.id))
-      .map(s => s.label);
-    if (seccionesHechas.length > 0) {
-      const lista = seccionesHechas.join('\n• ');
-      const ok = confirm(
-        `Ya tienes ${seccionesHechas.length} sección(es) generada(s) y guardada(s):\n\n• ${lista}\n\n` +
-        `Generar de nuevo las REEMPLAZARÁ todas por contenido nuevo. ¿Quieres continuar?`
-      );
-      if (!ok) return;
-    }
+    // Solo genera lo que falta; lo ya generado se conserva tal cual (para rehacer una, usa "Regenerar" en el Paso 1)
     iniciarGeneracionMetodologia();
   });
 }
@@ -22785,14 +22789,24 @@ async function prepararBorradorIntroduccion() {
 }
 
 async function iniciarGeneracionMetodologia() {
-  METODOLOGIA_STATE.generando = true;
-  METODOLOGIA_STATE.resultados = {};
-  METODOLOGIA_STATE.contenidos = {};
-  METODOLOGIA_STATE.conversaciones = {};
+  // Las secciones ya generadas se CONSERVAN (contenido, ediciones manuales e historial).
+  // Solo se llama a la IA para las secciones marcadas que aún no tienen contenido.
   METODOLOGIA_STATE.revisionAbierta = {};
   METODOLOGIA_STATE.faseRevision = false;
   METODOLOGIA_STATE.iterandoSeccion = null;
-  const seccionesActivas = METODOLOGIA_STATE.estructura.filter(s => s.activa);
+  const seccionesActivas = METODOLOGIA_STATE.estructura.filter(s => s.activa && !metodologiaSeccionGenerada(s.id));
+  if (seccionesActivas.length === 0) {
+    // Nada que generar: directo a revisión / Word
+    METODOLOGIA_STATE.generando = false;
+    METODOLOGIA_STATE.faseRevision = true;
+    const primeraYa = METODOLOGIA_STATE.estructura.find(s => s.activa);
+    if (primeraYa) METODOLOGIA_STATE.revisionAbierta[primeraYa.id] = true;
+    await guardarMetodologiaActual();
+    renderModalMetodologia();
+    return;
+  }
+  METODOLOGIA_STATE.generando = true;
+  for (const s of seccionesActivas) { delete METODOLOGIA_STATE.resultados[s.id]; delete METODOLOGIA_STATE.conversaciones[s.id]; }
   METODOLOGIA_STATE.progresoTotal = seccionesActivas.length;
   METODOLOGIA_STATE.progresoActual = 0;
   METODOLOGIA_STATE.mensajeProgreso = 'Preparando contexto...';
