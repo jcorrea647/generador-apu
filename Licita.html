@@ -5935,6 +5935,32 @@
     background: var(--gold-bg); padding: 2px 7px; border-radius: 999px;
     border: 1px solid var(--gold-light);
   }
+  /* Contenido sugerido: NO exigido por las bases */
+  .met-rev-badge-sug {
+    font-size: 10px; font-weight: 700; color: #8a5a00;
+    background: #fff4cc; padding: 2px 7px; border-radius: 999px;
+    border: 1px solid #f0c75e;
+  }
+  .met-sug-aviso {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: #fff8e1; border: 1px solid #f0c75e; color: #6b4700;
+    border-radius: 8px; padding: 9px 12px; margin-bottom: 10px; font-size: 12px;
+  }
+  .met-sug-aviso > span { flex: 1; min-width: 200px; }
+  .met-sug-box {
+    background: #fff8e1; border-left: 4px solid #e0a800;
+    border-radius: 6px; padding: 8px 12px; margin: 10px 0;
+  }
+  .met-sug-label {
+    font-size: 11px; font-weight: 700; font-style: italic; color: #8a5a00;
+    margin-bottom: 4px;
+  }
+  .met-visor-editor .mve-sug { background: #fff8e1; box-shadow: -4px 0 0 #e0a800; }
+  .met-visor-editor .mve-sug-mark {
+    background: #fff4cc; color: #8a5a00; font-size: 11px; font-weight: 700;
+    font-style: italic; padding: 3px 8px; border-left: 4px solid #e0a800; margin: 8px 0 4px;
+  }
+  .met-visor-editor .mve-sug-fin { margin: 0 0 10px; }
   .met-rev-body { padding: 13px; border-top: 1px solid var(--border); }
   .met-rev-loading {
     text-align: center; padding: 24px 0; color: var(--accent);
@@ -21733,6 +21759,51 @@ function renderPaso2Estructura(body) {
 // === VISOR DE SECCIÓN: modal ancho para ver y editar el contenido generado ===
 // === Conversores markdown <-> HTML editable (para el visor con formato) ===
 // Convierte markdown a HTML con metadatos (data-md) que permiten reconstruir los # al guardar.
+// === Bloques de SUGERENCIA (contenido no exigido por las bases) ===
+// La IA marca con estas líneas todo contenido que no responde a un requisito de las bases:
+//   [[SUGERENCIA — NO EXIGIDO EN LAS BASES]]
+//   ...texto sugerido...
+//   [[FIN SUGERENCIA]]
+const MET_SUG_INI_RE = /^\s*\[\[\s*SUGERENCIA\b[^\]]*\]\]\s*$/i;
+const MET_SUG_FIN_RE = /^\s*\[\[\s*FIN\s+SUGERENCIA\s*\]\]\s*$/i;
+const MET_SUG_LABEL = '⚠ SUGERENCIA — No es parte de lo exigido en las bases. Se entrega solo como sugerencia; revisar antes de incluir en la oferta.';
+function metContarSugerencias(md) {
+  if (!md) return 0;
+  return String(md).split('\n').filter(l => MET_SUG_INI_RE.test(l)).length;
+}
+// Elimina los bloques de sugerencia completos (marcadores + contenido).
+function metQuitarSugerencias(md) {
+  if (!md) return md;
+  const out = [];
+  let enSug = false;
+  let pendiente = [];   // líneas de un bloque aún no cerrado
+  for (const l of String(md).split('\n')) {
+    if (MET_SUG_INI_RE.test(l)) {
+      if (enSug) out.push(...pendiente);   // bloque previo sin cierre: se conserva su texto
+      enSug = true; pendiente = []; continue;
+    }
+    if (MET_SUG_FIN_RE.test(l)) { enSug = false; pendiente = []; continue; }
+    if (enSug) pendiente.push(l); else out.push(l);
+  }
+  // Si quedó un bloque sin [[FIN SUGERENCIA]] (ej. el usuario borró el marcador), NO se borra su
+  // contenido: solo se quita el marcador de inicio, para no eliminar texto de la oferta por error.
+  if (enSug) out.push(...pendiente);
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+// Antes de exportar a Word: si hay sugerencias, pregunta si se excluyen o se incluyen marcadas.
+// Devuelve 'excluir' | 'marcar'.
+function metPreguntarModoSugerencias(mds) {
+  const n = (mds || []).reduce((acc, md) => acc + metContarSugerencias(md), 0);
+  if (!n) return 'marcar';
+  const excluir = confirm(
+    `Hay ${n} bloque(s) marcados como SUGERENCIA (contenido que NO es parte de lo exigido en las bases).\n\n` +
+    `• Aceptar → EXCLUIRLOS del Word (recomendado para la oferta final).\n` +
+    `• Cancelar → INCLUIRLOS, resaltados en amarillo y rotulados como sugerencia, para revisarlos.`
+  );
+  return excluir ? 'excluir' : 'marcar';
+}
+const MET_SUG_SHADE = { shading: { type: 'clear', color: 'auto', fill: 'FFF4CC' } };
+
 function _mdToEditableHtml(md) {
   const esc = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -21743,18 +21814,31 @@ function _mdToEditableHtml(md) {
   if (!md || !md.trim()) return '<p data-md="p"><br></p>';
   const lines = md.split('\n');
   let html = '';
+  let enSug = false;
   for (let raw of lines) {
     const line = raw.replace(/\r$/, '');
     let m;
+    // Marcadores de sugerencia: se conservan como texto (para que el markdown no se pierda al editar)
+    if (MET_SUG_INI_RE.test(line)) {
+      enSug = true;
+      html += `<p data-md="p" class="mve-p mve-sug-mark" title="Contenido NO exigido por las bases. Bórralo si no lo quieres en la oferta.">${esc(line.trim())}</p>`;
+      continue;
+    }
+    if (MET_SUG_FIN_RE.test(line)) {
+      enSug = false;
+      html += `<p data-md="p" class="mve-p mve-sug-mark mve-sug-fin">${esc(line.trim())}</p>`;
+      continue;
+    }
+    const sug = enSug ? ' mve-sug' : '';
     if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
       const nivel = m[1].length;            // cuántos #
-      html += `<div data-md="h" data-level="${nivel}" class="mve-h mve-h${nivel}">${inline(m[2])}</div>`;
+      html += `<div data-md="h" data-level="${nivel}" class="mve-h mve-h${nivel}${sug}">${inline(m[2])}</div>`;
     } else if ((m = line.match(/^\s*[-*]\s+(.*)$/))) {
-      html += `<div data-md="li" class="mve-li">${inline(m[1])}</div>`;
+      html += `<div data-md="li" class="mve-li${sug}">${inline(m[1])}</div>`;
     } else if (line.trim() === '') {
-      html += `<p data-md="blank"><br></p>`;
+      html += `<p data-md="blank"${enSug ? ' class="mve-sug"' : ''}><br></p>`;
     } else {
-      html += `<p data-md="p" class="mve-p">${inline(line)}</p>`;
+      html += `<p data-md="p" class="mve-p${sug}">${inline(line)}</p>`;
     }
   }
   return html;
@@ -21830,7 +21914,7 @@ function abrirVisorSeccionMetodologia(secId) {
         <button class="met-visor-close" id="metVisorCloseBtn">Cerrar</button>
       </div>
       <div class="met-visor-body">
-        <div class="met-visor-hint">Contenido generado por la IA, mostrado con formato. Puedes editarlo directamente aquí y se guarda automáticamente. Estos cambios entran al documento Word cuando lo generes.</div>
+        <div class="met-visor-hint">Contenido generado por la IA, mostrado con formato. Puedes editarlo directamente aquí y se guarda automáticamente. Estos cambios entran al documento Word cuando lo generes.${metContarSugerencias(contenidoActual) ? ` <strong style="color:#8a5a00;">Lo resaltado en amarillo NO es parte de lo exigido en las bases (sugerencia): bórralo o consérvalo, y al generar el Word podrás excluirlo.</strong>` : ''}</div>
         <div class="met-visor-editor" id="metVisorEditor" contenteditable="true" spellcheck="false">${_mdToEditableHtml(contenidoActual)}</div>
         <div class="met-visor-saved" id="metVisorSaved"></div>
       </div>
@@ -21923,8 +22007,10 @@ async function descargarSeccionMetodologiaWord(secId) {
   }
   const sec = METODOLOGIA_STATE.estructura.find(s => s.id === secId);
   if (!sec) throw new Error('Sección no encontrada.');
-  const md = METODOLOGIA_STATE.contenidos[secId] || '';
+  let md = METODOLOGIA_STATE.contenidos[secId] || '';
   if (!md.trim()) throw new Error('Esta sección no tiene contenido.');
+  const modoSug = metPreguntarModoSugerencias([md]);
+  if (modoSug === 'excluir') md = metQuitarSugerencias(md);
 
   const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = docx;
   const lic = (typeof APP_STATE !== 'undefined' && APP_STATE.licitaciones)
@@ -21943,34 +22029,46 @@ async function descargarSeccionMetodologiaWord(secId) {
 
   // Parser markdown línea por línea (mismo criterio que el Word completo)
   const lineas = md.split('\n');
+  let enSug = false;
   for (let linea of lineas) {
     linea = linea.trimEnd();
     if (!linea.trim()) continue;
+    // Bloques de sugerencia (solo llegan aquí si el usuario eligió incluirlos marcados)
+    if (MET_SUG_INI_RE.test(linea)) {
+      enSug = true;
+      children.push(new Paragraph({
+        children: [new TextRun({ text: MET_SUG_LABEL, bold: true, italics: true, size: 20, color: '8A5A00' })],
+        spacing: { before: 160, after: 80 }, ...MET_SUG_SHADE,
+      }));
+      continue;
+    }
+    if (MET_SUG_FIN_RE.test(linea)) { enSug = false; continue; }
+    const sh = enSug ? MET_SUG_SHADE : {};
     if (linea.startsWith('### ')) {
       children.push(new Paragraph({
         children: [new TextRun({ text: linea.slice(4).replace(/^\*\*|\*\*$/g, ''), bold: true, size: 26, color: '1F3D2E' })],
-        heading: HeadingLevel.HEADING_2, spacing: { before: 280, after: 140 },
+        heading: HeadingLevel.HEADING_2, spacing: { before: 280, after: 140 }, ...sh,
       }));
       continue;
     }
     if (linea.startsWith('#### ')) {
       children.push(new Paragraph({
         children: [new TextRun({ text: linea.slice(5).replace(/^\*\*|\*\*$/g, ''), bold: true, size: 22, color: '1F3D2E' })],
-        heading: HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 },
+        heading: HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 }, ...sh,
       }));
       continue;
     }
     if (linea.startsWith('## ')) {
       children.push(new Paragraph({
         children: [new TextRun({ text: linea.slice(3).replace(/^\*\*|\*\*$/g, ''), bold: true, size: 28, color: '1F3D2E' })],
-        heading: HeadingLevel.HEADING_2, spacing: { before: 280, after: 140 },
+        heading: HeadingLevel.HEADING_2, spacing: { before: 280, after: 140 }, ...sh,
       }));
       continue;
     }
     if (linea.startsWith('# ')) {
       children.push(new Paragraph({
         children: [new TextRun({ text: linea.slice(2).replace(/^\*\*|\*\*$/g, ''), bold: true, size: 30, color: '1F3D2E' })],
-        heading: HeadingLevel.HEADING_2, spacing: { before: 280, after: 140 },
+        heading: HeadingLevel.HEADING_2, spacing: { before: 280, after: 140 }, ...sh,
       }));
       continue;
     }
@@ -21981,14 +22079,14 @@ async function descargarSeccionMetodologiaWord(secId) {
         children: parsearInlineBold(bulletMatch[2]),
         bullet: { level: bulletMatch[1].length >= 2 ? 1 : 0 },
         spacing: { after: 120, line: 300 },
-        alignment: AlignmentType.JUSTIFIED,
+        alignment: AlignmentType.JUSTIFIED, ...sh,
       }));
       continue;
     }
     children.push(new Paragraph({
       children: parsearInlineBold(linea),
       spacing: { after: 120, line: 300 },
-      alignment: AlignmentType.JUSTIFIED,
+      alignment: AlignmentType.JUSTIFIED, ...sh,
     }));
   }
 
@@ -22797,10 +22895,23 @@ function _mdPreviewToHtml(md) {
   const lines = md.split('\n');
   let html = '';
   let inList = false;
+  let enSug = false;
   const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
   for (let raw of lines) {
     const line = raw.replace(/\r$/, '');
     let m;
+    if (MET_SUG_INI_RE.test(line)) {
+      closeList();
+      if (enSug) html += '</div>';
+      enSug = true;
+      html += `<div class="met-sug-box"><div class="met-sug-label">${esc(MET_SUG_LABEL)}</div>`;
+      continue;
+    }
+    if (MET_SUG_FIN_RE.test(line)) {
+      closeList();
+      if (enSug) { html += '</div>'; enSug = false; }
+      continue;
+    }
     if ((m = line.match(/^####\s+(.*)/))) { closeList(); html += `<h5>${_mdInline(esc(m[1]))}</h5>`; }
     else if ((m = line.match(/^###\s+(.*)/))) { closeList(); html += `<h4>${_mdInline(esc(m[1]))}</h4>`; }
     else if ((m = line.match(/^##\s+(.*)/))) { closeList(); html += `<h3>${_mdInline(esc(m[1]))}</h3>`; }
@@ -22810,6 +22921,7 @@ function _mdPreviewToHtml(md) {
     else { closeList(); html += `<p>${_mdInline(esc(line))}</p>`; }
   }
   closeList();
+  if (enSug) html += '</div>';
   return html;
 }
 function _mdInline(s) {
@@ -22830,6 +22942,13 @@ function renderPaso3Revision(body) {
     const estaIterando = iterando === sec.id;
     const nIteraciones = ((METODOLOGIA_STATE.conversaciones[sec.id] || []).filter(t => t.role === 'assistant').length);
     const badgeIter = nIteraciones > 1 ? `<span class="met-rev-badge-iter">v${nIteraciones}</span>` : '';
+    const nSug = metContarSugerencias(contenido);
+    const badgeSug = nSug ? `<span class="met-rev-badge-sug" title="Bloques con contenido NO exigido por las bases">⚠ ${nSug} sugerencia${nSug > 1 ? 's' : ''}</span>` : '';
+    const avisoSug = nSug ? `
+            <div class="met-sug-aviso">
+              <span>⚠ Esta sección tiene <strong>${nSug}</strong> bloque${nSug > 1 ? 's' : ''} con contenido que <strong>no es parte de lo exigido en las bases</strong> (resaltado${nSug > 1 ? 's' : ''} en amarillo). Se entrega${nSug > 1 ? 'n' : ''} solo como sugerencia.</span>
+              <button class="btn-secondary btn-sm" data-quitar-sug="${sec.id}">🗑 Quitar sugerencias</button>
+            </div>` : '';
 
     let cuerpo = '';
     if (abierta) {
@@ -22841,6 +22960,7 @@ function renderPaso3Revision(body) {
       } else {
         cuerpo = `
           <div class="met-rev-body">
+            ${avisoSug}
             <div class="met-rev-preview">${_mdPreviewToHtml(contenido)}</div>
 
             <details class="met-rev-edit">
@@ -22865,6 +22985,7 @@ function renderPaso3Revision(body) {
           <span class="met-rev-ico">${sec.icon || '📄'}</span>
           <span class="met-rev-title">${escapeHtml(sec.label)}</span>
           ${badgeIter}
+          ${badgeSug}
           ${esError ? '<span class="met-rev-badge-err">error</span>' : '<span class="met-rev-badge-ok">✓ listo</span>'}
           <span class="met-rev-caret">${abierta ? '▼' : '▶'}</span>
         </div>
@@ -22900,6 +23021,20 @@ function renderPaso3Revision(body) {
     ta.addEventListener('input', () => {
       METODOLOGIA_STATE.contenidos[ta.dataset.editSec] = ta.value;
       guardarMetodologiaDebounced();
+    });
+  });
+  // Quitar todos los bloques de sugerencia (contenido no exigido por las bases) de una sección
+  body.querySelectorAll('[data-quitar-sug]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const secId = btn.dataset.quitarSug;
+      const md = METODOLOGIA_STATE.contenidos[secId] || '';
+      const n = metContarSugerencias(md);
+      if (!n) return;
+      if (!confirm(`Se eliminarán ${n} bloque(s) de sugerencia de esta sección (contenido no exigido por las bases). ¿Continuar?`)) return;
+      METODOLOGIA_STATE.contenidos[secId] = metQuitarSugerencias(md);
+      await guardarMetodologiaActual();
+      renderPaso3Revision(body);
     });
   });
   // Re-generar con nueva instrucción (iteración)
@@ -23712,7 +23847,8 @@ Estructura OBLIGATORIA — incluye TODAS las siguientes sub-secciones en este or
 
 ### 1. PERSONAL INDIRECTO
 
-Describe el rol y responsabilidades específicas de cada cargo profesional clave del contrato. Para cada cargo incluye: responsabilidades principales, interlocución con el mandante e ITO, dependencia jerárquica y dedicación al proyecto. Cargos a desarrollar como mínimo:
+Describe el rol y responsabilidades específicas de cada cargo profesional clave del contrato. Para cada cargo incluye: responsabilidades principales, interlocución con el mandante e ITO, dependencia jerárquica y dedicación al proyecto.
+REGLA DE PERSONAL CLAVE: si las bases entregan una lista explícita de cargos o personal clave, desarrolla EXACTAMENTE esos cargos, en ese orden y cantidad, sin agregar ni quitar ninguno, y cita los requisitos (título, experiencia, dedicación) tal como los dan las bases. Solo si las bases NO definen cargos, usa la siguiente lista como referencia, dentro de un bloque de sugerencia:
 - Administrador de Contrato / Administrador de Obra (líder del contrato, interlocutor principal con el mandante)
 - Supervisor de Obra / Jefe de Terreno (ejecución diaria, control directo de cuadrillas)
 - Encargado de Calidad (Plan de Calidad, PIE, protocolos, no conformidades, dossier)
@@ -23743,7 +23879,7 @@ Describe textualmente la estructura jerárquica del equipo del proyecto, en form
 - Cuarto nivel: Capataces y operadores especialistas.
 - Nivel base: Cuadrillas operativas.
 
-Indica las líneas de reporte y de coordinación funcional (con ITO, con áreas operativas del mandante). Menciona que el organigrama gráfico tipo árbol se incluye como anexo del documento.
+Indica las líneas de reporte y de coordinación funcional (con ITO, con áreas operativas del mandante). Solo si las bases exigen presentar el organigrama como anexo o formulario, indícalo con el nombre/número exacto que le dan las bases; si no lo exigen, NO menciones anexos.
 
 ### 4. CURVAS DE PERSONAL
 
@@ -23753,11 +23889,11 @@ Describe la planificación de dotación a lo largo del contrato:
 - Etapa de régimen / ejecución plena: dotación máxima según las partidas en ejecución simultánea.
 - Etapa de cierre y desmovilización: reducción progresiva, conservando personal de calidad y administración para cierre de protocolos, dossier de calidad, planos as-built y entrega final.
 - Estima rangos razonables de dotación máxima y promedio según el plazo y alcance del contrato detectado en las bases. Si las bases entregan información de plazo, úsala. Si no, indica plazos relativos.
-- Indica que la curva gráfica de personal se incluye como anexo del documento.
+- Solo si las bases exigen presentar la curva de personal como anexo o formulario, indícalo con el nombre/número exacto de las bases; si no, NO menciones anexos.
 
 ### 5. MAQUINARIA DISPONIBLE PARA EL PROYECTO
 
-Detalla la flota disponible para la ejecución del contrato. Si la lista entregada arriba está vacía o incompleta, propón una flota tipo coherente con las partidas detectadas en las bases técnicas, incluyendo:
+Detalla la flota disponible para la ejecución del contrato. Si las bases exigen equipos mínimos (tipo, cantidad, antigüedad, capacidad), lístalos exactamente como los piden. Si la lista entregada arriba está vacía o incompleta y las bases no fijan equipos mínimos, puedes proponer una flota tipo coherente con las partidas, PERO DENTRO de un bloque de sugerencia, considerando:
 - Equipos de movimiento de tierra: excavadoras, retroexcavadoras, cargadores frontales, bulldozers cuando aplique.
 - Equipos de base y compactación: motoniveladoras, rodillos vibratorios lisos, rodillos neumáticos, camiones aljibe.
 - Equipos asfálticos: terminadora asfáltica, camiones tolva, camión imprimador.
@@ -23765,7 +23901,8 @@ Detalla la flota disponible para la ejecución del contrato. Si la lista entrega
 - Equipos auxiliares: grupos electrógenos, compresores, herramientas menores.
 - Equipos topográficos: estación total, GPS RTK, niveles.
 
-Indica para cada equipo (cuando se disponga del dato): descripción, cantidad, año, marca/modelo y modalidad (propio/arriendo). Toda la maquinaria contará con mantención vigente, acreditación HSEC del mandante cuando aplique e inspecciones internas previas al ingreso a obra. Menciona que el listado detallado de maquinaria se entrega como anexo del documento.`,
+Indica para cada equipo (cuando se disponga del dato): descripción, cantidad, año, marca/modelo y modalidad (propio/arriendo).
+Condiciones de los equipos (mantención, programa de mantenimiento, certificados de calibración, antigüedad máxima, acreditación, inspecciones de ingreso): abórdalas SOLO si las bases las exigen, citando el requisito. NO agregues programas de mantenimiento, checklists, certificados ni anexos que las bases no pidan. Solo si las bases exigen presentar un listado de maquinaria como anexo o formulario, indícalo con el nombre/número exacto de las bases.`,
 
     seguridad: `Genera la sección "VI. SALUD, SEGURIDAD Y GESTIÓN PREVENTIVA" de una propuesta técnica, en formato markdown. Tono profesional, ajustado a normativa chilena.
 
@@ -23916,9 +24053,21 @@ Antes de redactar, recorre TODOS los documentos entregados (Bases Técnicas, Bas
 - La sección debe abordar TODOS esos requisitos, uno por uno, explicando cómo la empresa los cumplirá. No elijas solo los más importantes.
 - Si el requisito exige presentar un plan o documento específico (ej. "Plan de Circularidad y Reciclaje", "Plan de Gestión Hídrica"), nómbralo con ese nombre exacto y describe su contenido.
 - Si las respuestas a consultas modifican un requisito, usa la versión de las consultas.
-- AL FINAL de la sección agrega el apartado "#### Cumplimiento de requisitos de las bases" con una viñeta por requisito, en este formato exacto: "- **<requisito>** (<documento, sección/página>): abordado en <apartado de esta sección>." Debe listar todos los requisitos identificados.
+- AL FINAL de la sección agrega el apartado "#### Cumplimiento de requisitos de las bases" con una viñeta por requisito, en este formato exacto: "- **<requisito>** (<documento, sección/página>): abordado en <apartado de esta sección>." Debe listar todos los requisitos identificados. NUNCA incluyas en esta lista contenido sugerido que las bases no exigen.
 === FIN BARRIDO ===`;
-  const prompt = basePrompt + instruccionSeccion + contextoSubs + apoyoAnalisis + barridoRequisitos + `\n\nREGLAS CRÍTICAS:\n- Tono profesional, propio de una propuesta técnica formal chilena.\n- Usa headings markdown ### y #### dentro de tu respuesta.\n- NO incluyas el título de sección (### I. OBJETIVO Y ALCANCE) — empieza directo con el contenido o subsecciones.\n- NO inventes datos. Si algo no está en las bases técnicas, omítelo o sé genérico.\n- ${largoRegla}`;
+  const reglaTrazabilidad = `\n\n=== TRAZABILIDAD CON LAS BASES (OBLIGATORIO — PREVALECE SOBRE EL GUION DE ESTA SECCIÓN) ===
+- Todo lo que escribas debe responder a un requisito, obligación o criterio de evaluación de las bases (BBTT, BAG, BPP, anexos, formularios, respuestas a consultas). Explicar CÓMO la empresa cumplirá un requisito que SÍ está en las bases es contenido normal.
+- NO introduzcas compromisos que las bases no piden: planes, programas, procedimientos, checklists, anexos, certificados, frecuencias, ensayos, equipos, dotaciones, plazos o niveles de servicio. Todo compromiso escrito en la propuesta puede ser exigido después por el mandante.
+- NUNCA menciones anexos, apéndices o documentos adjuntos ("se adjunta en el Anexo X", "se incluye como anexo") salvo que las bases exijan presentarlos; en ese caso usa el nombre/número exacto que dan las bases. Nunca inventes numeración de anexos.
+- Si consideras útil agregar contenido NO exigido por las bases (buena práctica, valor agregado, o lo que pida el guion de esta sección sin respaldo en las bases), va SEPARADO en un bloque con este formato EXACTO, cada marcador solo en su propia línea:
+[[SUGERENCIA — NO EXIGIDO EN LAS BASES]]
+(contenido sugerido)
+[[FIN SUGERENCIA]]
+- Nunca mezcles contenido sugerido dentro de un párrafo que responde a las bases. Si dudas si algo es exigido, márcalo como sugerencia. Si un apartado completo del guion no tiene respaldo en las bases, márcalo entero como sugerencia o omítelo.
+- Distingue obligatorio (debe / exige / excluyente) de deseable (se valora / recomienda / preferentemente): lo deseable se presenta como deseable, citando el texto, nunca como exigencia.
+- Excepciones (no requieren marca): lo que el usuario pidió explícitamente en sus instrucciones de contexto o de subsección, y la referencia textual obligatoria cuando el guion la entrega.
+=== FIN TRAZABILIDAD ===`;
+  const prompt = basePrompt + instruccionSeccion + contextoSubs + apoyoAnalisis + barridoRequisitos + reglaTrazabilidad + `\n\nREGLAS CRÍTICAS:\n- Tono profesional, propio de una propuesta técnica formal chilena.\n- Usa headings markdown ### y #### dentro de tu respuesta.\n- NO incluyas el título de sección (### I. OBJETIVO Y ALCANCE) — empieza directo con el contenido o subsecciones.\n- NO inventes datos. Si algo no está en las bases, omítelo o preséntalo dentro de un bloque [[SUGERENCIA — NO EXIGIDO EN LAS BASES]] … [[FIN SUGERENCIA]].\n- ${largoRegla} La extensión NUNCA justifica agregar compromisos no exigidos: profundiza en los requisitos reales.`;
 
   const _metModel = metodologiaModelKey();
   const provider = MODELS[_metModel].provider;
@@ -23943,7 +24092,7 @@ Antes de redactar, recorre TODOS los documentos entregados (Bases Técnicas, Bas
       histNeutral = [{ role: 'user', text: prompt }];
     }
     histNeutral.push({ role: 'user', text:
-      `INSTRUCCIÓN DE AJUSTE DEL USUARIO sobre la sección ya redactada. Devuelve la SECCIÓN COMPLETA Y CORREGIDA en markdown (no solo el cambio, no expliques qué cambiaste, no saludes): ${iterarPrompt}` });
+      `INSTRUCCIÓN DE AJUSTE DEL USUARIO sobre la sección ya redactada. Devuelve la SECCIÓN COMPLETA Y CORREGIDA en markdown (no solo el cambio, no expliques qué cambiaste, no saludes). Mantén la regla de trazabilidad: todo contenido no exigido por las bases va dentro de [[SUGERENCIA — NO EXIGIDO EN LAS BASES]] … [[FIN SUGERENCIA]], salvo que esta instrucción lo pida explícitamente: ${iterarPrompt}` });
   } else {
     histNeutral = [{ role: 'user', text: prompt }];
   }
@@ -24184,6 +24333,10 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
   }
   const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle, TableOfContents } = docx;
 
+  // Contenido sugerido (no exigido por las bases): preguntar si se excluye o se incluye marcado
+  const _secsIncluidas = METODOLOGIA_STATE.estructura.filter(s => soloIds ? soloIds.has(s.id) : s.activa);
+  const modoSug = metPreguntarModoSugerencias(_secsIncluidas.map(s => contenidoSecciones[s.id] || ''));
+
   const empresa = METODOLOGIA_STATE.empresa;
   const lic = APP_STATE.licitaciones.find(l => l.id === APP_STATE.currentLicId);
   const nombreLic = lic?.nombre || 'Proyecto';
@@ -24322,7 +24475,8 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
   // SECCIONES
   for (const sec of METODOLOGIA_STATE.estructura) {
     if (soloIds ? !soloIds.has(sec.id) : !sec.activa) continue;
-    const md = contenidoSecciones[sec.id] || '[Sección sin contenido]';
+    let md = contenidoSecciones[sec.id] || '[Sección sin contenido]';
+    if (modoSug === 'excluir') md = metQuitarSugerencias(md) || '[Sección sin contenido]';
 
     // Page break antes de cada sección
     children.push(new Paragraph({
@@ -24335,18 +24489,31 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
     // Procesar markdown línea por línea (parser básico)
     const lineas = md.split('\n');
     let enLista = false;
+    let enSug = false;
     for (let linea of lineas) {
       linea = linea.trimEnd();
       if (!linea.trim()) {
         if (enLista) enLista = false;
         continue;
       }
+      // Bloques de sugerencia (solo llegan aquí si el usuario eligió incluirlos marcados)
+      if (MET_SUG_INI_RE.test(linea)) {
+        enSug = true;
+        children.push(new Paragraph({
+          children: [new TextRun({text: MET_SUG_LABEL, bold: true, italics: true, size: 20, color: '8A5A00'})],
+          spacing: {before: 160, after: 80}, ...MET_SUG_SHADE,
+        }));
+        enLista = false;
+        continue;
+      }
+      if (MET_SUG_FIN_RE.test(linea)) { enSug = false; enLista = false; continue; }
+      const sh = enSug ? MET_SUG_SHADE : {};
       // Heading 3 (###)
       if (linea.startsWith('### ')) {
         children.push(new Paragraph({
           children: [new TextRun({text: linea.slice(4).replace(/^\*\*|\*\*$/g, ''), bold: true, size: 26, color: '1F3D2E'})],
           heading: HeadingLevel.HEADING_2,
-          spacing: {before: 280, after: 140},
+          spacing: {before: 280, after: 140}, ...sh,
         }));
         enLista = false;
         continue;
@@ -24356,7 +24523,7 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
         children.push(new Paragraph({
           children: [new TextRun({text: linea.slice(5).replace(/^\*\*|\*\*$/g, ''), bold: true, size: 22, color: '1F3D2E'})],
           heading: HeadingLevel.HEADING_3,
-          spacing: {before: 200, after: 100},
+          spacing: {before: 200, after: 100}, ...sh,
         }));
         enLista = false;
         continue;
@@ -24370,7 +24537,7 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
           children: parsearInlineBold(txt),
           bullet: {level: bulletMatch[1].length >= 2 ? 1 : 0},
           spacing: {after: 120, line: 300},
-          alignment: AlignmentType.JUSTIFIED,
+          alignment: AlignmentType.JUSTIFIED, ...sh,
         }));
         enLista = true;
         continue;
@@ -24379,7 +24546,7 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
       children.push(new Paragraph({
         children: parsearInlineBold(linea),
         spacing: {after: 120, line: 300},
-        alignment: AlignmentType.JUSTIFIED,
+        alignment: AlignmentType.JUSTIFIED, ...sh,
       }));
       enLista = false;
     }
