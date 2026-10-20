@@ -5466,6 +5466,9 @@
   .met-regen-btn.is-loading,
   .met-regen-btn:disabled { opacity: 0.7; cursor: default; }
   .met-regen-btn.is-loading { background: #FEF3C7; color: #92400E; }
+  /* Botón Regenerar + fecha/hora de la última (re)generación debajo */
+  .met-regen-wrap { display: flex; flex-direction: column; align-items: center; gap: 2px; flex-shrink: 0; }
+  .met-regen-fecha { font-size: 10px; line-height: 1.1; color: var(--text-mute); white-space: nowrap; font-variant-numeric: tabular-nums; }
   /* Selector "📘" para exportar capítulos elegidos a Word (independiente del check de generación) */
   .met-word-sel {
     background: var(--surface); color: #1E40AF; border: 1.5px dashed #93C5FD;
@@ -20941,7 +20944,17 @@ const METODOLOGIA_STATE = {
   regenSecId: null,      // seccionId que se está (re)generando a pedido desde el Paso 1 (o null)
   faseRevision: false,   // true cuando ya se generó todo y estamos en modo revisión/iteración
   seleccionWord: {},     // { seccionId: true } capítulos elegidos para exportar a Word (no afecta la generación)
+  fechasGen: {},         // { seccionId: ISO } fecha/hora de la última (re)generación con IA
 };
+
+// Formatea la fecha de última (re)generación: "20-10-2026 11:49"
+function metFormatearFechaGen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 // Estructura DEFAULT (al abrir por primera vez o resetear)
 function nuevaEstructuraDefault() {
@@ -21005,6 +21018,7 @@ async function guardarMetodologiaActual() {
       contenidos: METODOLOGIA_STATE.contenidos,
       resultados: METODOLOGIA_STATE.resultados,
       conversaciones: METODOLOGIA_STATE.conversaciones,
+      fechasGen: METODOLOGIA_STATE.fechasGen,
       faseRevision: METODOLOGIA_STATE.faseRevision,
       estructuraSugeridaIA: METODOLOGIA_STATE.estructuraSugeridaIA,
       estructuraSugeridaIAAt: METODOLOGIA_STATE.estructuraSugeridaIAAt,
@@ -21043,6 +21057,7 @@ async function cargarMetodologiaDeLicitacion(licId) {
   METODOLOGIA_STATE.estructuraSugeridaIA = false;
   METODOLOGIA_STATE.estructuraSugeridaIAAt = null;
   METODOLOGIA_STATE.seleccionWord = {};
+  METODOLOGIA_STATE.fechasGen = {};
 
   if (!licId) return false;
   try {
@@ -21054,6 +21069,7 @@ async function cargarMetodologiaDeLicitacion(licId) {
     if (rec.contenidos && typeof rec.contenidos === 'object') METODOLOGIA_STATE.contenidos = rec.contenidos;
     if (rec.resultados && typeof rec.resultados === 'object') METODOLOGIA_STATE.resultados = rec.resultados;
     if (rec.conversaciones && typeof rec.conversaciones === 'object') METODOLOGIA_STATE.conversaciones = rec.conversaciones;
+    if (rec.fechasGen && typeof rec.fechasGen === 'object') METODOLOGIA_STATE.fechasGen = rec.fechasGen;
     METODOLOGIA_STATE.faseRevision = !!rec.faseRevision;
     METODOLOGIA_STATE.estructuraSugeridaIA = !!rec.estructuraSugeridaIA;
     METODOLOGIA_STATE.estructuraSugeridaIAAt = rec.estructuraSugeridaIAAt || null;
@@ -21350,7 +21366,10 @@ function renderPaso2Estructura(body) {
               ? 'Vuelve a generar SOLO esta sección con la IA (reemplaza su contenido actual)'
               : 'Genera SOLO esta sección con la IA, sin regenerar las demás';
             const dis = METODOLOGIA_STATE.regenSecId ? 'disabled' : '';
-            return `<button class="met-regen-btn" data-regen-sec="${sec.id}" title="${title}" ${dis}>${label}</button>`;
+            const fechaTxt = yaGenerada ? metFormatearFechaGen((METODOLOGIA_STATE.fechasGen || {})[sec.id]) : '';
+            const btnHtml = `<button class="met-regen-btn" data-regen-sec="${sec.id}" title="${title}" ${dis}>${label}</button>`;
+            if (!fechaTxt) return btnHtml;
+            return `<span class="met-regen-wrap">${btnHtml}<span class="met-regen-fecha" title="Última (re)generación con IA">${fechaTxt}</span></span>`;
           })()}
           <span class="met-sub-badge">${sec.subsecciones.length} sub</span>
           <button class="met-expand-btn" data-toggle="${sec.id}">${expandida ? '▼' : '▶'}</button>
@@ -23157,6 +23176,7 @@ async function regenerarSeccionMetodologiaPaso1(secId, body) {
     }
     METODOLOGIA_STATE.contenidos[secId] = contenido;
     METODOLOGIA_STATE.resultados[secId] = 'ok';
+    (METODOLOGIA_STATE.fechasGen = METODOLOGIA_STATE.fechasGen || {})[secId] = new Date().toISOString();
     await guardarMetodologiaActual();
   } catch (e) {
     console.error('Error (re)generando sección a pedido', secId, e);
@@ -23264,6 +23284,7 @@ async function iniciarGeneracionMetodologia() {
       contenidoSecciones[sec.id] = contenido;
       METODOLOGIA_STATE.contenidos[sec.id] = contenido;
       METODOLOGIA_STATE.resultados[sec.id] = 'ok';
+      (METODOLOGIA_STATE.fechasGen = METODOLOGIA_STATE.fechasGen || {})[sec.id] = new Date().toISOString();
     } catch (e) {
       console.error('Error generando sección', sec.id, e);
       const esRateLimit = e.isRateLimit || /429|rate limit/i.test(e.message);
@@ -23278,6 +23299,7 @@ async function iniciarGeneracionMetodologia() {
           contenidoSecciones[sec.id] = contenido;
           METODOLOGIA_STATE.contenidos[sec.id] = contenido;
           METODOLOGIA_STATE.resultados[sec.id] = 'ok';
+          (METODOLOGIA_STATE.fechasGen = METODOLOGIA_STATE.fechasGen || {})[sec.id] = new Date().toISOString();
         } catch (e2) {
           METODOLOGIA_STATE.resultados[sec.id] = 'error';
           contenidoSecciones[sec.id] = `[Error generando esta sección: ${e2.message}]`;
@@ -23386,7 +23408,8 @@ function metMergeEstructura(estructuraNueva, estructuraVieja, estado) {
   const contenidosViejos = estado.contenidos || {};
   const conversacionesViejas = estado.conversaciones || {};
   const resultadosViejos = estado.resultados || {};
-  const nuevoContenidos = {}, nuevoConversaciones = {}, nuevoResultados = {};
+  const fechasViejas = estado.fechasGen || {};
+  const nuevoContenidos = {}, nuevoConversaciones = {}, nuevoResultados = {}, nuevoFechas = {};
 
   const secViejasUsadas = new Set();
 
@@ -23405,6 +23428,7 @@ function metMergeEstructura(estructuraNueva, estructuraVieja, estado) {
       if (contenidosViejos[mejorSec.id] !== undefined) nuevoContenidos[secN.id] = contenidosViejos[mejorSec.id];
       if (conversacionesViejas[mejorSec.id] !== undefined) nuevoConversaciones[secN.id] = conversacionesViejas[mejorSec.id];
       if (resultadosViejos[mejorSec.id] !== undefined) nuevoResultados[secN.id] = resultadosViejos[mejorSec.id];
+      if (fechasViejas[mejorSec.id] !== undefined) nuevoFechas[secN.id] = fechasViejas[mejorSec.id];
       // Si la vieja tenía instrucción y la nueva no trae, conservarla
       if ((!secN.instruccion || !secN.instruccion.trim()) && mejorSec.instruccion) secN.instruccion = mejorSec.instruccion;
 
@@ -23463,10 +23487,11 @@ function metMergeEstructura(estructuraNueva, estructuraVieja, estado) {
       if (contenidosViejos[secV.id] !== undefined) nuevoContenidos[clon.id] = contenidosViejos[secV.id];
       if (conversacionesViejas[secV.id] !== undefined) nuevoConversaciones[clon.id] = conversacionesViejas[secV.id];
       if (resultadosViejos[secV.id] !== undefined) nuevoResultados[clon.id] = resultadosViejos[secV.id];
+      if (fechasViejas[secV.id] !== undefined) nuevoFechas[clon.id] = fechasViejas[secV.id];
     }
   });
 
-  return { contenidos: nuevoContenidos, conversaciones: nuevoConversaciones, resultados: nuevoResultados };
+  return { contenidos: nuevoContenidos, conversaciones: nuevoConversaciones, resultados: nuevoResultados, fechasGen: nuevoFechas };
 }
 
 let metSugiriendoEstructura = false;
@@ -23564,6 +23589,7 @@ async function sugerirEstructuraMetodologia(body) {
     METODOLOGIA_STATE.contenidos = nuevoEstado.contenidos;
     METODOLOGIA_STATE.conversaciones = nuevoEstado.conversaciones;
     METODOLOGIA_STATE.resultados = nuevoEstado.resultados;
+    METODOLOGIA_STATE.fechasGen = nuevoEstado.fechasGen;
     METODOLOGIA_STATE.estructuraSugeridaIA = true;
     METODOLOGIA_STATE.estructuraSugeridaIAAt = new Date().toISOString();
     // Expandir la primera sección técnica para que el usuario la vea
