@@ -5570,6 +5570,24 @@
   .met-visor-editor .mve-h6 { font-size: 13.5px; margin: 12px 0 6px; }
   .met-visor-editor p:first-child,
   .met-visor-editor .mve-h:first-child { margin-top: 0; }
+  /* Tablas markdown y cartas Gantt */
+  .met-visor-editor .mve-table-wrap { overflow-x: auto; margin: 4px 0 14px; border: 1px solid var(--border); border-radius: 8px; }
+  .met-visor-editor .mve-table { border-collapse: collapse; width: 100%; font-size: 12.5px; line-height: 1.35; }
+  .met-visor-editor .mve-table th,
+  .met-visor-editor .mve-table td { border: 1px solid var(--border); padding: 6px 8px; vertical-align: middle; text-align: left; outline: none; }
+  .met-visor-editor .mve-table thead th { background: #1F3D2E; color: #fff; font-weight: 600; position: sticky; top: 0; z-index: 1; }
+  .met-visor-editor .mve-table tbody tr:nth-child(even) td { background: rgba(0,0,0,0.018); }
+  .met-visor-editor .mve-table tbody tr.mve-fase td { background: #E8EFEA; font-weight: 600; }
+  .met-visor-editor .mve-table td:focus,
+  .met-visor-editor .mve-table th:focus { box-shadow: inset 0 0 0 2px var(--accent); }
+  .met-visor-editor .mve-table .mve-c { text-align: center; }
+  .met-visor-editor .mve-gantt thead th.mve-c { min-width: 34px; font-size: 11px; padding: 6px 4px; }
+  .met-visor-editor .mve-gcell { padding: 0 !important; min-width: 34px; height: 30px; cursor: pointer; position: relative; }
+  .met-visor-editor .mve-gcell:hover { background: rgba(63,143,107,0.12) !important; }
+  .met-visor-editor .mve-gcell .mve-bar { display: none; position: absolute; left: 0; right: 0; top: 7px; bottom: 7px; background: #3F8F6B; }
+  .met-visor-editor .mve-gcell.fase .mve-bar { background: #1F3D2E; }
+  .met-visor-editor .mve-gcell.on .mve-bar { display: block; }
+  .met-visor-editor .mve-table-wrap.mve-sug { box-shadow: -4px 0 0 #e0a800; }
   .met-visor-saved {
     font-size: 11.5px; color: #166534; margin-top: 8px; min-height: 16px;
   }
@@ -21823,6 +21841,94 @@ function metPreguntarModoSugerencias(mds) {
 }
 const MET_SUG_SHADE = { shading: { type: 'clear', color: 'auto', fill: 'FFF4CC' } };
 
+// =====================================================================
+// TABLAS MARKDOWN (incluye cartas Gantt con █) — compartido visor + Word
+// =====================================================================
+const MET_BAR_CHARS_RE = /[█▓▒■▇▆▅▌▐]/;
+const MET_TABLA_LINEA_RE = /^\s*\|.*\|?\s*$/;
+const MET_TABLA_SEP_RE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+function metEsCeldaBarra(s) {
+  const t = String(s || '').replace(/\*\*/g, '').trim();
+  return t !== '' && MET_BAR_CHARS_RE.test(t) && /^[█▓▒■▇▆▅▌▐\s]+$/.test(t);
+}
+function metSplitFilaTabla(linea) {
+  let t = linea.trim();
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|') && !t.endsWith('\\|')) t = t.slice(0, -1);
+  return t.split(/(?<!\\)\|/).map(c => c.replace(/\\\|/g, '|').trim());
+}
+// Recibe las líneas de un bloque de tabla y devuelve { header, rows, ganttCols }
+function metParseTablaMd(lineasTabla) {
+  let header = null;
+  const rows = [];
+  lineasTabla.forEach((l, i) => {
+    if (MET_TABLA_SEP_RE.test(l)) {
+      if (i === 1 && rows.length === 1 && !header) header = rows.shift();
+      return;
+    }
+    rows.push(metSplitFilaTabla(l));
+  });
+  const todas = header ? [header, ...rows] : rows;
+  let ncols = todas.reduce((m, r) => Math.max(m, r.length), 0);
+  // Quitar columnas finales vacías en todas las filas (pipes sobrantes de la IA)
+  while (ncols > 1 && todas.every(r => !(r[ncols - 1] || '').trim())) ncols--;
+  const pad = (r) => { const o = r.slice(0, ncols); while (o.length < ncols) o.push(''); return o; };
+  const H = header ? pad(header) : null;
+  const R = rows.map(pad);
+  const ganttCols = new Set();
+  R.forEach(r => r.forEach((c, j) => { if (metEsCeldaBarra(c)) ganttCols.add(j); }));
+  return { header: H, rows: R, ganttCols, ncols };
+}
+// Tabla markdown → Table de docx (barras Gantt como celdas sombreadas)
+function metTablaMdADocx(lineasTabla, enSug) {
+  const { Table, TableRow, TableCell, Paragraph, TextRun, WidthType, AlignmentType } = docx;
+  const { header, rows, ganttCols, ncols } = metParseTablaMd(lineasTabla);
+  const nG = ganttCols.size;
+  const nT = ncols - nG;
+  const anchoG = nG ? Math.min(60, nG * 5) / nG : 0;
+  const anchoT = nT ? (100 - anchoG * nG) / nT : 0;
+  const size = ncols > 8 ? 16 : 18;
+  const runs = (txt, extra = {}) => {
+    const out = [];
+    const re = /\*\*([^*]+)\*\*/g; let last = 0, m;
+    const s = String(txt || '').replace(/(^|[^*])\*(?!\s)([^*]+)\*/g, '$1$2');
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > last) out.push(new TextRun({ text: s.slice(last, m.index), size, ...extra }));
+      out.push(new TextRun({ text: m[1], bold: true, size, ...extra }));
+      last = m.index + m[0].length;
+    }
+    if (last < s.length) out.push(new TextRun({ text: s.slice(last), size, ...extra }));
+    return out.length ? out : [new TextRun({ text: '', size })];
+  };
+  const ancho = (j) => (nG ? { width: { size: ganttCols.has(j) ? anchoG : anchoT, type: WidthType.PERCENTAGE } } : {});
+  const filas = [];
+  if (header) {
+    filas.push(new TableRow({
+      tableHeader: true,
+      children: header.map((c, j) => new TableCell({
+        children: [new Paragraph({ children: runs(c, { bold: true, color: 'FFFFFF' }), alignment: ganttCols.has(j) ? AlignmentType.CENTER : AlignmentType.LEFT })],
+        shading: { fill: '1F3D2E' }, ...ancho(j),
+      })),
+    }));
+  }
+  rows.forEach(r => {
+    const esFase = /^\s*\*\*/.test(r[0] || '') || /^\s*\*\*/.test(r[1] || '');
+    filas.push(new TableRow({
+      children: r.map((c, j) => {
+        if (metEsCeldaBarra(c)) {
+          return new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: '', size })] })], shading: { fill: esFase ? '1F3D2E' : '3F8F6B' }, ...ancho(j) });
+        }
+        const fill = enSug ? 'FFF4CC' : (esFase ? 'E8EFEA' : undefined);
+        return new TableCell({
+          children: [new Paragraph({ children: runs(c), alignment: ganttCols.has(j) ? AlignmentType.CENTER : AlignmentType.LEFT })],
+          ...(fill ? { shading: { fill } } : {}), ...ancho(j),
+        });
+      }),
+    }));
+  });
+  return new Table({ rows: filas, width: { size: 100, type: WidthType.PERCENTAGE } });
+}
+
 function _mdToEditableHtml(md) {
   const esc = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -21834,9 +21940,35 @@ function _mdToEditableHtml(md) {
   const lines = md.split('\n');
   let html = '';
   let enSug = false;
-  for (let raw of lines) {
-    const line = raw.replace(/\r$/, '');
+  for (let _i = 0; _i < lines.length; _i++) {
+    const line = lines[_i].replace(/\r$/, '');
     let m;
+    // Tabla markdown (incluye Gantt con █): se muestra como tabla real, editable por celda
+    if (MET_TABLA_LINEA_RE.test(line)) {
+      const bloque = [];
+      while (_i < lines.length && MET_TABLA_LINEA_RE.test(lines[_i].replace(/\r$/, ''))) {
+        bloque.push(lines[_i].replace(/\r$/, '')); _i++;
+      }
+      _i--;
+      const { header, rows, ganttCols } = metParseTablaMd(bloque);
+      const esGantt = ganttCols.size > 0;
+      const celda = (c, j, tag, esFase) => {
+        if (tag === 'td' && ganttCols.has(j) && (metEsCeldaBarra(c) || !c.trim())) {
+          const on = metEsCeldaBarra(c);
+          return `<td class="mve-gcell${on ? ' on' : ''}${esFase ? ' fase' : ''}" data-bar="${on ? '1' : '0'}" data-raw="${esc(on ? c.replace(/\*\*/g, '').trim() : '')}" title="Clic para marcar/desmarcar este período"><span class="mve-bar"></span></td>`;
+        }
+        const cls = ganttCols.has(j) ? ' class="mve-c"' : '';
+        return `<${tag}${cls} contenteditable="true">${inline(c)}</${tag}>`;
+      };
+      let t = `<div data-md="table" data-header="${header ? '1' : '0'}" class="mve-table-wrap${esGantt ? ' mve-gantt' : ''}${enSug ? ' mve-sug' : ''}" contenteditable="false"><table class="mve-table">`;
+      if (header) t += `<thead><tr>${header.map((c, j) => celda(c, j, 'th')).join('')}</tr></thead>`;
+      t += '<tbody>' + rows.map(r => {
+        const esFase = /^\s*\*\*/.test(r[0] || '') || /^\s*\*\*/.test(r[1] || '');
+        return `<tr${esFase ? ' class="mve-fase"' : ''}>${r.map((c, j) => celda(c, j, 'td', esFase)).join('')}</tr>`;
+      }).join('') + '</tbody></table></div>';
+      html += t;
+      continue;
+    }
     // Marcadores de sugerencia: se conservan como texto (para que el markdown no se pierda al editar)
     if (MET_SUG_INI_RE.test(line)) {
       enSug = true;
@@ -21892,6 +22024,22 @@ function _editableHtmlToMd(editorEl) {
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const tipo = node.getAttribute && node.getAttribute('data-md');
+    if (tipo === 'table') {
+      const celdaMd = (c) => {
+        if (c.classList.contains('mve-gcell')) {
+          return c.getAttribute('data-bar') === '1' ? (c.getAttribute('data-raw') || '████') : '';
+        }
+        return inlineToMd(c).replace(/ /g, ' ').replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|').trim();
+      };
+      const filas = [...node.querySelectorAll('tr')];
+      const conHeader = node.getAttribute('data-header') === '1';
+      filas.forEach((tr, i) => {
+        const celdas = [...tr.children].map(celdaMd);
+        lineas.push('| ' + celdas.join(' | ') + ' |');
+        if (i === 0 && conHeader) lineas.push('|' + celdas.map(() => '---').join('|') + '|');
+      });
+      return;
+    }
     let texto = inlineToMd(node).replace(/\u00a0/g, ' ').replace(/\n+$/,'');
     if (tipo === 'h') {
       const nivel = parseInt(node.getAttribute('data-level') || '3', 10) || 3;
@@ -21956,6 +22104,20 @@ function abrirVisorSeccionMetodologia(secId) {
       clearTimeout(editor._savedTimer);
       editor._savedTimer = setTimeout(() => { if (savedMsg) savedMsg.textContent = ''; }, 1500);
     }
+  });
+  // Carta Gantt: clic en un período lo marca/desmarca
+  editor.addEventListener('click', (e) => {
+    const td = e.target.closest && e.target.closest('td.mve-gcell');
+    if (!td || !editor.contains(td)) return;
+    const on = td.getAttribute('data-bar') !== '1';
+    td.setAttribute('data-bar', on ? '1' : '0');
+    if (on && !td.getAttribute('data-raw')) td.setAttribute('data-raw', '████');
+    td.classList.toggle('on', on);
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  // En celdas de tabla, Enter no crea líneas nuevas (rompería la fila del markdown)
+  editor.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.closest && e.target.closest('td, th')) e.preventDefault();
   });
   // Al pegar, insertar como texto plano para no ensuciar el formato con HTML externo
   editor.addEventListener('paste', (e) => {
@@ -22049,9 +22211,18 @@ async function descargarSeccionMetodologiaWord(secId) {
   // Parser markdown línea por línea (mismo criterio que el Word completo)
   const lineas = md.split('\n');
   let enSug = false;
-  for (let linea of lineas) {
-    linea = linea.trimEnd();
+  for (let _i = 0; _i < lineas.length; _i++) {
+    let linea = lineas[_i].trimEnd();
     if (!linea.trim()) continue;
+    // Tabla markdown (incluye carta Gantt) → tabla real de Word
+    if (MET_TABLA_LINEA_RE.test(linea)) {
+      const bloque = [];
+      while (_i < lineas.length && MET_TABLA_LINEA_RE.test(lineas[_i].trimEnd())) { bloque.push(lineas[_i].trimEnd()); _i++; }
+      _i--;
+      children.push(metTablaMdADocx(bloque, enSug));
+      children.push(new Paragraph({ children: [], spacing: { after: 120 } }));
+      continue;
+    }
     // Bloques de sugerencia (solo llegan aquí si el usuario eligió incluirlos marcados)
     if (MET_SUG_INI_RE.test(linea)) {
       enSug = true;
@@ -24516,10 +24687,20 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
     const lineas = md.split('\n');
     let enLista = false;
     let enSug = false;
-    for (let linea of lineas) {
-      linea = linea.trimEnd();
+    for (let _i = 0; _i < lineas.length; _i++) {
+      let linea = lineas[_i].trimEnd();
       if (!linea.trim()) {
         if (enLista) enLista = false;
+        continue;
+      }
+      // Tabla markdown (incluye carta Gantt) → tabla real de Word
+      if (MET_TABLA_LINEA_RE.test(linea)) {
+        const bloque = [];
+        while (_i < lineas.length && MET_TABLA_LINEA_RE.test(lineas[_i].trimEnd())) { bloque.push(lineas[_i].trimEnd()); _i++; }
+        _i--;
+        children.push(metTablaMdADocx(bloque, enSug));
+        children.push(new Paragraph({ children: [], spacing: { after: 120 } }));
+        enLista = false;
         continue;
       }
       // Bloques de sugerencia (solo llegan aquí si el usuario eligió incluirlos marcados)
