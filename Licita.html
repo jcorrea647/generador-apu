@@ -7170,7 +7170,7 @@
           Para usar Gemini Flash y Pro. Tier gratuito generoso de Google.
         </p>
         <div class="field" style="margin-bottom: 8px;">
-          <input type="password" id="googleKeyInput" placeholder="AIzaSy..." autocomplete="off" style="border: 1px solid var(--border-soft); border-radius: 9px; padding: 9px 12px; font-size: 12px; font-family: 'JetBrains Mono', monospace; background: white; width: 100%;" />
+          <input type="password" id="googleKeyInput" placeholder="AQ.… o AIzaSy…" autocomplete="off" style="border: 1px solid var(--border-soft); border-radius: 9px; padding: 9px 12px; font-size: 12px; font-family: 'JetBrains Mono', monospace; background: white; width: 100%;" />
         </div>
         <a href="https://aistudio.google.com/apikey" target="_blank" style="font-size: 11px; color: var(--accent-dark); text-decoration: underline;">→ Obtener key gratis en aistudio.google.com</a>
       </div>
@@ -11706,7 +11706,7 @@ async function inicializarChat() {
   }
 
   // Cargar API key de Google
-  if (GOOGLE_KEY_HARDCODED && GOOGLE_KEY_HARDCODED !== "TU_API_KEY_GOOGLE_AQUI" && GOOGLE_KEY_HARDCODED.startsWith("AIza")) {
+  if (GOOGLE_KEY_HARDCODED && GOOGLE_KEY_HARDCODED !== "TU_API_KEY_GOOGLE_AQUI" && (GOOGLE_KEY_HARDCODED.startsWith("AIza") || GOOGLE_KEY_HARDCODED.startsWith("AQ."))) {
     chatState.googleApiKey = GOOGLE_KEY_HARDCODED;
   } else {
     chatState.googleApiKey = await loadGoogleKey();
@@ -11828,8 +11828,8 @@ $('apiModalSave').addEventListener('click', async () => {
     alert('La API key de Anthropic debe empezar con "sk-ant-"');
     return;
   }
-  if (googleKey && !googleKey.startsWith('AIza')) {
-    alert('La API key de Google debe empezar con "AIza"');
+  if (googleKey && !googleKey.startsWith('AIza') && !googleKey.startsWith('AQ.')) {
+    alert('La API key de Google debe empezar con "AIza" o "AQ."');
     return;
   }
 
