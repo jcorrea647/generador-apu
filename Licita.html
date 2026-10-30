@@ -5580,6 +5580,14 @@
   .met-visor-editor .mve-h6 { font-size: 13.5px; margin: 12px 0 6px; }
   .met-visor-editor p:first-child,
   .met-visor-editor .mve-h:first-child { margin-top: 0; }
+  /* Organigramas y bloques de código en el visor */
+  .met-visor-editor .mve-org { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #FAFCFB; text-align: center; }
+  .met-visor-editor .mve-org.mve-sug { background: #FFF8E6; }
+  .met-visor-editor .mve-org-edit { text-align: left; margin-top: 8px; }
+  .met-visor-editor .mve-org-edit summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--accent); }
+  .met-visor-editor .mve-org-hint { font-size: 11px; color: var(--text-mute); margin: 6px 0; }
+  .met-visor-editor .mve-org-ta, .met-visor-editor .mve-code-ta { width: 100%; box-sizing: border-box; font-family: 'Courier New', monospace; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: #fff; resize: vertical; }
+  .met-visor-editor .mve-code { margin: 10px 0; }
   /* Tablas markdown y cartas Gantt */
   .met-visor-editor .mve-table-wrap { overflow-x: auto; margin: 4px 0 14px; border: 1px solid var(--border); border-radius: 8px; }
   .met-visor-editor .mve-table { border-collapse: collapse; width: 100%; font-size: 12.5px; line-height: 1.35; }
@@ -21869,6 +21877,239 @@ function metPreguntarModoSugerencias(mds) {
 const MET_SUG_SHADE = { shading: { type: 'clear', color: 'auto', fill: 'FFF4CC' } };
 
 // =====================================================================
+// ORGANIGRAMAS (bloque [[ORGANIGRAMA]] … [[FIN ORGANIGRAMA]]) — visor + Word
+// Formato de cada línea:  "--Cargo | detalle"  (cantidad de guiones = nivel)
+// También rescata diagramas ASCII antiguos en bloques ``` (cajas +---+ / árboles ├──).
+// =====================================================================
+const MET_ORG_INI_RE = /^\s*\[\[\s*ORGANIGRAMA\s*\]\]\s*$/i;
+const MET_ORG_FIN_RE = /^\s*\[\[\s*FIN\s+ORGANIGRAMA\s*\]\]\s*$/i;
+const MET_FENCE_RE = /^\s*```\s*([\w-]*)\s*$/;
+
+// Si en lineas[i] empieza un bloque especial, devuelve { tipo:'org'|'code', lineas, lang, fin }
+// (fin = índice de la última línea del bloque). Si no, devuelve null.
+function metLeerBloqueEspecial(lineas, i) {
+  const l = String(lineas[i] || '').replace(/\r$/, '');
+  if (MET_ORG_INI_RE.test(l)) {
+    const out = []; let j = i + 1;
+    while (j < lineas.length && !MET_ORG_FIN_RE.test(String(lineas[j]).replace(/\r$/, ''))) { out.push(String(lineas[j]).replace(/\r$/, '')); j++; }
+    return { tipo: 'org', lineas: out.filter(x => x.trim()), fin: Math.min(j, lineas.length - 1) };
+  }
+  const f = l.match(MET_FENCE_RE);
+  if (f) {
+    const lang = (f[1] || '').toLowerCase();
+    const out = []; let j = i + 1;
+    while (j < lineas.length && !/^\s*```\s*$/.test(String(lineas[j]).replace(/\r$/, ''))) { out.push(String(lineas[j]).replace(/\r$/, '')); j++; }
+    const fin = Math.min(j, lineas.length - 1);
+    if (lang === 'organigrama') return { tipo: 'org', lineas: out.filter(x => x.trim()), fin };
+    const conv = metAsciiAOrganigrama(out);
+    if (conv) return { tipo: 'org', lineas: conv, fin };
+    return { tipo: 'code', lineas: out, lang, fin };
+  }
+  return null;
+}
+
+// Líneas "--Cargo | detalle" → bosque de nodos { titulo, detalle, hijos }
+function metParseOrganigrama(lineas) {
+  const raices = [], pila = [];
+  (lineas || []).forEach(raw => {
+    let l = String(raw).replace(/\t/g, '  ');
+    if (!l.trim()) return;
+    let nivel;
+    const g = l.match(/^\s*((?:-\s*)+)(?=\S)/);
+    if (g) { nivel = (g[1].match(/-/g) || []).length; l = l.slice(g[0].length); }
+    else { nivel = Math.floor((l.match(/^\s*/)[0].length) / 2); l = l.trim(); }
+    l = l.replace(/^[•*·]\s*/, '').replace(/\*\*/g, '').trim();
+    if (!l) return;
+    const partes = l.split(/\s*\|\s*/);
+    const nodo = { titulo: partes[0], detalle: partes.slice(1).filter(Boolean).join(' · '), hijos: [] };
+    while (pila.length && pila[pila.length - 1].nivel >= nivel) pila.pop();
+    if (pila.length) pila[pila.length - 1].nodo.hijos.push(nodo); else raices.push(nodo);
+    pila.push({ nivel, nodo });
+  });
+  return raices;
+}
+
+// Intenta convertir un diagrama ASCII (cajas +---+ con texto entre | | o árbol ├──/└──)
+// a líneas de organigrama. Devuelve null si no parece un organigrama.
+function metAsciiAOrganigrama(lineasIn) {
+  const L = (lineasIn || []).map(x => String(x)
+    .replace(/[┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬]/g, '+').replace(/[─═]/g, '-').replace(/[│║]/g, '|'));
+  // --- 1) Cajas ---
+  const cajas = [];
+  const usado = new Set();
+  for (let i = 0; i < L.length - 1; i++) {
+    const ln = L[i];
+    for (let a = 0; a < ln.length; a++) {
+      if (ln[a] !== '+' || usado.has(i + ':' + a)) continue;
+      for (let b = a + 2; b < ln.length; b++) {
+        if (!/[-+=v^]/.test(ln[b])) break;
+        if (ln[b] !== '+') continue;
+        const sig = L[i + 1] || '';
+        if (sig[a] !== '|' || sig[b] !== '|') continue;
+        const textos = []; let k = i + 1;
+        while (k < L.length && (L[k][a] === '|') && (L[k][b] === '|')) { const t = L[k].slice(a + 1, b).trim(); if (t) textos.push(t); k++; }
+        if (textos.length) { cajas.push({ fila: i, a, b, c: (a + b) / 2, textos }); usado.add(i + ':' + a); }
+        break;
+      }
+    }
+  }
+  if (cajas.length >= 2) {
+    const filas = [...new Set(cajas.map(c => c.fila))].sort((x, y) => x - y);
+    cajas.forEach(c => { c.nivel = filas.indexOf(c.fila); c.hijos = []; c.padre = null; });
+    cajas.forEach(c => {
+      if (c.nivel === 0) return;
+      for (let n = c.nivel - 1; n >= 0; n--) {
+        const cand = cajas.filter(x => x.nivel === n);
+        if (!cand.length) continue;
+        cand.sort((x, y) => Math.abs(x.c - c.c) - Math.abs(y.c - c.c));
+        c.padre = cand[0]; cand[0].hijos.push(c); break;
+      }
+    });
+    const out = [];
+    const emitir = (c, d) => {
+      c.hijos.sort((x, y) => x.c - y.c);
+      out.push('-'.repeat(d) + c.textos[0] + (c.textos.length > 1 ? ' | ' + c.textos.slice(1).join(' ') : ''));
+      c.hijos.forEach(h => emitir(h, d + 1));
+    };
+    cajas.filter(c => !c.padre).sort((x, y) => x.c - y.c).forEach(c => emitir(c, 0));
+    return out;
+  }
+  // --- 2) Árbol con ├── / └── / +-- ---
+  const ramas = L.filter(l => /^[\s|]*[+`\\][-=]{1,}\s*\S/.test(l)).length;
+  if (ramas >= 2) {
+    const out = [];
+    L.forEach(l => {
+      if (!l.trim()) return;
+      const m = l.match(/^([\s|]*)[+`\\][-=]+[>]?\s*(.*)$/);
+      if (m) out.push('-'.repeat(Math.floor(m[1].length / 4) + 1) + m[2].trim());
+      else if (!/^[\s|]+$/.test(l)) out.push(l.trim().replace(/^[-|\s]+/, ''));
+    });
+    return out.filter(x => x.replace(/-/g, '').trim()).length >= 2 ? out : null;
+  }
+  return null;
+}
+
+// Dibuja el organigrama en un canvas y devuelve { dataUrl, bytes, ancho, alto } (ancho/alto en px CSS).
+function metRenderOrganigrama(lineas) {
+  const raices = metParseOrganigrama(lineas);
+  if (!raices.length || typeof document === 'undefined') return null;
+  const W = 176, GX = 20, GY = 44, PAD = 24, COL_IND = 22, COL_GAP = 12;
+  const FT = 'bold 13px Arial, Helvetica, sans-serif', FD = '11.5px Arial, Helvetica, sans-serif';
+  const meas = document.createElement('canvas').getContext('2d');
+  const wrap = (txt, font, max) => {
+    meas.font = font;
+    const pal = String(txt || '').split(/\s+/).filter(Boolean); const out = []; let cur = '';
+    pal.forEach(w => { const t = cur ? cur + ' ' + w : w; if (meas.measureText(t).width > max && cur) { out.push(cur); cur = w; } else cur = t; });
+    if (cur) out.push(cur); return out;
+  };
+  // Medir texto de cada nodo y altura uniforme de caja
+  let H = 0;
+  const prep = (n, nivel) => {
+    n.nivel = nivel;
+    n.lt = wrap(n.titulo, FT, W - 16);
+    n.ld = n.detalle ? wrap(n.detalle, FD, W - 16) : [];
+    H = Math.max(H, 14 + n.lt.length * 16 + n.ld.length * 14);
+    n.hijos.forEach(h => prep(h, nivel + 1));
+  };
+  raices.forEach(r => prep(r, 0));
+  H = Math.max(H, 48);
+  // Hojas numerosas bajo un mismo jefe → columna vertical (evita organigramas kilométricos)
+  const esColumna = (n) => n.hijos.length > 3 && n.hijos.every(h => !h.hijos.length);
+  const medir = (n) => {
+    n.hijos.forEach(medir);
+    if (!n.hijos.length) { n.anchoSub = W; n.altoSub = H; return; }
+    if (esColumna(n)) { n.anchoSub = W + COL_IND; n.altoSub = H + GY / 2 + n.hijos.length * (H + COL_GAP); return; }
+    const sum = n.hijos.reduce((a, h) => a + h.anchoSub, 0) + GX * (n.hijos.length - 1);
+    n.anchoSub = Math.max(W, sum);
+    n.altoSub = H + GY + Math.max(...n.hijos.map(h => h.altoSub));
+  };
+  raices.forEach(medir);
+  const cajas = [], lineasCon = [];
+  const ubicar = (n, x0, y0) => {
+    n.x = x0 + (n.anchoSub - W) / 2; n.y = y0;
+    if (!n.hijos.length) { cajas.push(n); return; }
+    if (esColumna(n)) {
+      n.x = x0; cajas.push(n);
+      const xl = n.x + 12; let y = y0 + H + GY / 2;
+      n.hijos.forEach(h => {
+        h.x = x0 + COL_IND; h.y = y; cajas.push(h);
+        lineasCon.push([[xl, h.y + H / 2], [h.x, h.y + H / 2]]);
+        y += H + COL_GAP;
+      });
+      lineasCon.push([[xl, n.y + H], [xl, n.hijos[n.hijos.length - 1].y + H / 2]]);
+      return;
+    }
+    cajas.push(n);
+    const sum = n.hijos.reduce((a, h) => a + h.anchoSub, 0) + GX * (n.hijos.length - 1);
+    let x = x0 + (n.anchoSub - sum) / 2;
+    const yh = y0 + H + GY;
+    n.hijos.forEach(h => { ubicar(h, x, yh); x += h.anchoSub + GX; });
+    const ybus = y0 + H + GY / 2, cx = n.x + W / 2;
+    lineasCon.push([[cx, y0 + H], [cx, ybus]]);
+    const cxs = n.hijos.map(h => h.x + W / 2);
+    if (n.hijos.length > 1) lineasCon.push([[Math.min(...cxs), ybus], [Math.max(...cxs), ybus]]);
+    n.hijos.forEach(h => lineasCon.push([[h.x + W / 2, ybus], [h.x + W / 2, h.y]]));
+  };
+  let x = PAD;
+  raices.forEach(r => { ubicar(r, x, PAD); x += r.anchoSub + GX * 2; });
+  const ancho = Math.ceil(x - GX * 2 + PAD);
+  const alto = Math.ceil(Math.max(...cajas.map(c => c.y + H)) + PAD);
+  const S = 2; // resolución x2 para que se vea nítido en Word
+  const cv = document.createElement('canvas');
+  cv.width = ancho * S; cv.height = alto * S;
+  const ctx = cv.getContext('2d');
+  ctx.scale(S, S);
+  ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, ancho, alto);
+  ctx.strokeStyle = '#7A8C82'; ctx.lineWidth = 1.4;
+  lineasCon.forEach(([p, q]) => { ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); });
+  const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); };
+  cajas.forEach(n => {
+    const est = n.nivel === 0 ? { f: '#1F3D2E', b: '#1F3D2E', t: '#FFFFFF', d: '#D7E6DC' }
+              : n.nivel === 1 ? { f: '#2F6B4F', b: '#2F6B4F', t: '#FFFFFF', d: '#DCEDE3' }
+              : n.nivel === 2 ? { f: '#E8F0EA', b: '#2F6B4F', t: '#1F3D2E', d: '#4B5E53' }
+              :                 { f: '#FFFFFF', b: '#7A8C82', t: '#1F3D2E', d: '#4B5E53' };
+    rr(n.x, n.y, W, H, 7); ctx.fillStyle = est.f; ctx.fill(); ctx.strokeStyle = est.b; ctx.lineWidth = 1.2; ctx.stroke();
+    const altoTxt = n.lt.length * 16 + n.ld.length * 14;
+    let y = n.y + (H - altoTxt) / 2 + 12;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.font = FT; ctx.fillStyle = est.t;
+    n.lt.forEach(t => { ctx.fillText(t, n.x + W / 2, y); y += 16; });
+    ctx.font = FD; ctx.fillStyle = est.d;
+    n.ld.forEach(t => { ctx.fillText(t, n.x + W / 2, y - 1); y += 14; });
+  });
+  const dataUrl = cv.toDataURL('image/png');
+  const bin = atob(dataUrl.split(',')[1] || '');
+  const bytes = new Uint8Array(bin.length);
+  for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+  return { dataUrl, bytes, ancho, alto };
+}
+
+// Bloque especial → elementos docx (organigrama como imagen; código como texto monoespaciado)
+function metBloqueEspecialADocx(info) {
+  const { Paragraph, TextRun, ImageRun, AlignmentType } = docx;
+  if (info.tipo === 'org') {
+    const r = metRenderOrganigrama(info.lineas);
+    if (r && r.bytes.length) {
+      const MAXW = 600, MAXH = 820;
+      const k = Math.min(1, MAXW / r.ancho, MAXH / r.alto);
+      return [new Paragraph({
+        alignment: AlignmentType.CENTER, spacing: { before: 160, after: 200 },
+        children: [new ImageRun({ data: r.bytes, transformation: { width: Math.round(r.ancho * k), height: Math.round(r.alto * k) } })],
+      })];
+    }
+    // Sin canvas: lista con sangría por nivel
+    const out = [];
+    const rec = (n, d) => { out.push(new Paragraph({ indent: { left: 360 * d }, spacing: { after: 40 }, children: [new TextRun({ text: n.titulo, bold: d < 2 }), ...(n.detalle ? [new TextRun({ text: ' — ' + n.detalle })] : [])] })); n.hijos.forEach(h => rec(h, d + 1)); };
+    metParseOrganigrama(info.lineas).forEach(n => rec(n, 0));
+    return out;
+  }
+  return info.lineas.map(l => new Paragraph({
+    spacing: { after: 0 },
+    children: [new TextRun({ text: l || ' ', font: 'Courier New', size: 18 })],
+  }));
+}
+
+// =====================================================================
 // TABLAS MARKDOWN (incluye cartas Gantt con █) — compartido visor + Word
 // =====================================================================
 const MET_BAR_CHARS_RE = /[█▓▒■▇▆▅▌▐]/;
@@ -21970,6 +22211,23 @@ function _mdToEditableHtml(md) {
   for (let _i = 0; _i < lines.length; _i++) {
     const line = lines[_i].replace(/\r$/, '');
     let m;
+    // Organigrama / bloque de código: se muestra como bloque propio (no como tablas)
+    const _esp = metLeerBloqueEspecial(lines, _i);
+    if (_esp) {
+      _i = _esp.fin;
+      const raw = esc(_esp.lineas.join('\n'));
+      if (_esp.tipo === 'org') {
+        const r = metRenderOrganigrama(_esp.lineas);
+        html += `<div data-md="org" class="mve-org${enSug ? ' mve-sug' : ''}" contenteditable="false">`
+          + (r ? `<img class="mve-org-img" src="${r.dataUrl}" alt="Organigrama" style="max-width:100%;width:${r.ancho}px;">` : '')
+          + `<details class="mve-org-edit"><summary>✏️ Editar organigrama</summary>`
+          + `<div class="mve-org-hint">Una línea por cargo. Los guiones al inicio indican el nivel (sin guion = cargo superior, "-" = reporta a él, "--" = siguiente nivel). Usa " | " para agregar un detalle.</div>`
+          + `<textarea class="mve-org-ta" rows="${Math.min(14, _esp.lineas.length + 2)}" spellcheck="false">${raw}</textarea></details></div>`;
+      } else {
+        html += `<div data-md="code" data-lang="${esc(_esp.lang || '')}" class="mve-code" contenteditable="false"><textarea class="mve-code-ta" rows="${Math.min(16, _esp.lineas.length + 1)}" spellcheck="false">${raw}</textarea></div>`;
+      }
+      continue;
+    }
     // Tabla markdown (incluye Gantt con █): se muestra como tabla real, editable por celda
     if (MET_TABLA_LINEA_RE.test(line)) {
       const bloque = [];
@@ -22051,6 +22309,17 @@ function _editableHtmlToMd(editorEl) {
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const tipo = node.getAttribute && node.getAttribute('data-md');
+    if (tipo === 'org') {
+      const ta = node.querySelector('textarea');
+      const cuerpo = (ta ? ta.value : '').split('\n').map(x => x.replace(/\s+$/, '')).filter(x => x.trim());
+      if (cuerpo.length) { lineas.push('[[ORGANIGRAMA]]', ...cuerpo, '[[FIN ORGANIGRAMA]]'); }
+      return;
+    }
+    if (tipo === 'code') {
+      const ta = node.querySelector('textarea');
+      lineas.push('```' + (node.getAttribute('data-lang') || ''), ...(ta ? ta.value : '').split('\n'), '```');
+      return;
+    }
     if (tipo === 'table') {
       const celdaMd = (c) => {
         if (c.classList.contains('mve-gcell')) {
@@ -22130,6 +22399,18 @@ function abrirVisorSeccionMetodologia(secId) {
       savedMsg.textContent = '✓ Guardado';
       clearTimeout(editor._savedTimer);
       editor._savedTimer = setTimeout(() => { if (savedMsg) savedMsg.textContent = ''; }, 1500);
+    }
+  });
+  // Organigrama: al editar su texto se redibuja la imagen
+  editor.addEventListener('input', (e) => {
+    const ta = e.target;
+    if (!ta || !ta.classList || !ta.classList.contains('mve-org-ta')) return;
+    const caja = ta.closest('[data-md="org"]');
+    const r = metRenderOrganigrama(ta.value.split('\n'));
+    let img = caja && caja.querySelector('.mve-org-img');
+    if (caja && r) {
+      if (!img) { img = document.createElement('img'); img.className = 'mve-org-img'; img.alt = 'Organigrama'; caja.insertBefore(img, caja.firstChild); }
+      img.src = r.dataUrl; img.style.maxWidth = '100%'; img.style.width = r.ancho + 'px';
     }
   });
   // Carta Gantt: clic en un período lo marca/desmarca
@@ -22222,6 +22503,8 @@ function metExtraerGanttsSeccion(secId) {
   const out = [];
   let ultimoTitulo = '';
   for (let i = 0; i < lineas.length; i++) {
+    const _esp = metLeerBloqueEspecial(lineas, i);
+    if (_esp) { i = _esp.fin; continue; }
     const l = lineas[i].trimEnd();
     const h = l.match(/^#{1,6}\s+(.*)$/);
     if (h) { ultimoTitulo = h[1].replace(/\*\*/g, '').trim(); continue; }
@@ -22393,6 +22676,9 @@ async function descargarSeccionMetodologiaWord(secId) {
   for (let _i = 0; _i < lineas.length; _i++) {
     let linea = lineas[_i].trimEnd();
     if (!linea.trim()) continue;
+    // Organigrama → imagen; bloque ``` → texto monoespaciado (nunca tablas rotas)
+    const _esp = metLeerBloqueEspecial(lineas, _i);
+    if (_esp) { _i = _esp.fin; metBloqueEspecialADocx(_esp).forEach(p => children.push(p)); continue; }
     // Tabla markdown (incluye carta Gantt) → tabla real de Word
     if (MET_TABLA_LINEA_RE.test(linea)) {
       const bloque = [];
@@ -24248,7 +24534,7 @@ Indica que todo el personal directo cumplirá con la acreditación HSEC del mand
 
 ### 3. ORGANIGRAMA
 
-Describe textualmente la estructura jerárquica del equipo del proyecto, en forma de árbol:
+Presenta la estructura jerárquica del equipo del proyecto como organigrama, usando el bloque [[ORGANIGRAMA]] … [[FIN ORGANIGRAMA]] descrito en las REGLAS CRÍTICAS (no la dibujes con caracteres):
 - Nivel superior: Gerencia de la empresa contratista.
 - Segundo nivel: Administrador de Contrato (reporte directo al mandante).
 - Tercer nivel: Profesionales staff (Encargado de Calidad, Asesor de Prevención, Planificador) y Jefes de Terreno / Supervisores.
@@ -24443,7 +24729,8 @@ Antes de redactar, recorre TODOS los documentos entregados (Bases Técnicas, Bas
 - Distingue obligatorio (debe / exige / excluyente) de deseable (se valora / recomienda / preferentemente): lo deseable se presenta como deseable, citando el texto, nunca como exigencia.
 - Excepciones (no requieren marca): lo que el usuario pidió explícitamente en sus instrucciones de contexto o de subsección, y la referencia textual obligatoria cuando el guion la entrega.
 === FIN TRAZABILIDAD ===`;
-  const prompt = basePrompt + instruccionSeccion + contextoSubs + apoyoAnalisis + barridoRequisitos + reglaTrazabilidad + `\n\nREGLAS CRÍTICAS:\n- Tono profesional, propio de una propuesta técnica formal chilena.\n- Usa headings markdown ### y #### dentro de tu respuesta.\n- NO incluyas el título de sección (### I. OBJETIVO Y ALCANCE) — empieza directo con el contenido o subsecciones.\n- NO inventes datos. Si algo no está en las bases, omítelo o preséntalo dentro de un bloque [[SUGERENCIA — NO EXIGIDO EN LAS BASES]] … [[FIN SUGERENCIA]].\n- ${largoRegla} La extensión NUNCA justifica agregar compromisos no exigidos: profundiza en los requisitos reales.`;
+  const prompt = basePrompt + instruccionSeccion + contextoSubs + apoyoAnalisis + barridoRequisitos + reglaTrazabilidad + `\n\nREGLAS CRÍTICAS:\n- Tono profesional, propio de una propuesta técnica formal chilena.\n- Usa headings markdown ### y #### dentro de tu respuesta.\n- NO incluyas el título de sección (### I. OBJETIVO Y ALCANCE) — empieza directo con el contenido o subsecciones.\n- NO inventes datos. Si algo no está en las bases, omítelo o preséntalo dentro de un bloque [[SUGERENCIA — NO EXIGIDO EN LAS BASES]] … [[FIN SUGERENCIA]].\n- ${largoRegla} La extensión NUNCA justifica agregar compromisos no exigidos: profundiza en los requisitos reales.\n- ORGANIGRAMAS Y JERARQUÍAS: NUNCA dibujes diagramas con caracteres (+---+, |, ├──, flechas) ni uses bloques de código (\`\`\`). Toda estructura jerárquica (organigrama, líneas de reporte, dependencias) va EXCLUSIVAMENTE en este bloque, una línea por cargo, con guiones al inicio para indicar el nivel y \" | \" para un detalle opcional:\n[[ORGANIGRAMA]]\nAdministrador de Contrato | Presencia permanente\n-Jefe de Terreno LB\n--Cuadrillas LB | 2 equipos\n-Jefe de Terreno LT\n--Cuadrilla LT | 1 equipo\n[[FIN ORGANIGRAMA]]\n  La app lo dibuja como organigrama gráfico en el Word. Antes o después del bloque puedes explicar en prosa las líneas de reporte y coordinación.`;
+  const MET_REGLA_ORGANIGRAMA = `ORGANIGRAMAS Y JERARQUÍAS: NUNCA dibujes diagramas con caracteres (+---+, |, ├──, flechas) ni uses bloques de código (\`\`\`). Toda estructura jerárquica (organigrama, líneas de reporte, dependencias) va EXCLUSIVAMENTE en este bloque, una línea por cargo, con guiones al inicio para indicar el nivel y \" | \" para un detalle opcional:\n[[ORGANIGRAMA]]\nAdministrador de Contrato | Presencia permanente\n-Jefe de Terreno LB\n--Cuadrillas LB | 2 equipos\n-Jefe de Terreno LT\n--Cuadrilla LT | 1 equipo\n[[FIN ORGANIGRAMA]]\n  La app lo dibuja como organigrama gráfico en el Word. Antes o después del bloque puedes explicar en prosa las líneas de reporte y coordinación.`;
 
   const _metModel = metodologiaModelKey();
   const provider = MODELS[_metModel].provider;
@@ -24468,7 +24755,7 @@ Antes de redactar, recorre TODOS los documentos entregados (Bases Técnicas, Bas
       histNeutral = [{ role: 'user', text: prompt }];
     }
     histNeutral.push({ role: 'user', text:
-      `INSTRUCCIÓN DE AJUSTE DEL USUARIO sobre la sección ya redactada. Devuelve la SECCIÓN COMPLETA Y CORREGIDA en markdown (no solo el cambio, no expliques qué cambiaste, no saludes). Mantén la regla de trazabilidad: todo contenido no exigido por las bases va dentro de [[SUGERENCIA — NO EXIGIDO EN LAS BASES]] … [[FIN SUGERENCIA]], salvo que esta instrucción lo pida explícitamente: ${iterarPrompt}` });
+      `INSTRUCCIÓN DE AJUSTE DEL USUARIO sobre la sección ya redactada. Devuelve la SECCIÓN COMPLETA Y CORREGIDA en markdown (no solo el cambio, no expliques qué cambiaste, no saludes). Mantén la regla de trazabilidad: todo contenido no exigido por las bases va dentro de [[SUGERENCIA — NO EXIGIDO EN LAS BASES]] … [[FIN SUGERENCIA]], salvo que esta instrucción lo pida explícitamente: ${iterarPrompt}\n\n${MET_REGLA_ORGANIGRAMA}` });
   } else {
     histNeutral = [{ role: 'user', text: prompt }];
   }
@@ -24872,6 +25159,9 @@ async function construirYDescargarWord(contenidoSecciones, opts = {}) {
         if (enLista) enLista = false;
         continue;
       }
+      // Organigrama → imagen; bloque ``` → texto monoespaciado (nunca tablas rotas)
+      const _esp = metLeerBloqueEspecial(lineas, _i);
+      if (_esp) { _i = _esp.fin; enLista = false; metBloqueEspecialADocx(_esp).forEach(p => children.push(p)); continue; }
       // Tabla markdown (incluye carta Gantt) → tabla real de Word
       if (MET_TABLA_LINEA_RE.test(linea)) {
         const bloque = [];
