@@ -5446,6 +5446,16 @@
   }
   .met-ver-btn:hover { background: #BBF7D0; }
   .met-ver-btn:active { transform: scale(0.96); }
+  /* Botón "📊 Excel": descarga la Carta Gantt del capítulo como planilla Excel */
+  .met-excel-btn {
+    background: #E8F5EC; color: #107C41; border: 1px solid #6FBF8E;
+    font-size: 11px; padding: 4px 12px; border-radius: 99px; font-weight: 700;
+    flex-shrink: 0; letter-spacing: 0.02em; white-space: nowrap; cursor: pointer;
+    font-family: inherit; transition: background 0.15s, transform 0.1s, opacity 0.15s;
+  }
+  .met-excel-btn:hover:not(:disabled) { background: #CDEBD7; }
+  .met-excel-btn:active:not(:disabled) { transform: scale(0.96); }
+  .met-excel-btn:disabled { opacity: 0.6; cursor: default; }
   /* Botón "Regenerar / Generar a pedido" (por sección, en el Paso 1) */
   .met-regen-btn {
     background: #FEF3C7;
@@ -21373,6 +21383,7 @@ function renderPaso2Estructura(body) {
           <input type="text" class="met-sec-label" value="${escapeHtml(sec.label)}" data-rename-sec="${sec.id}">
           ${metodologiaSeccionGenerada(sec.id) ? `<button class="met-word-sel ${METODOLOGIA_STATE.seleccionWord[sec.id] ? 'is-on' : ''}" data-word-sel="${sec.id}" title="Marcar este capítulo para descargarlo en Word junto con otros"><span class="met-word-box">${METODOLOGIA_STATE.seleccionWord[sec.id] ? '✓' : ''}</span>Word</button>` : ''}
           ${metodologiaSeccionGenerada(sec.id) ? `<button class="met-ver-btn" data-ver-sec="${sec.id}" title="Ver y editar el contenido generado de esta sección">👁 Ver</button>` : ''}
+          ${(metodologiaSeccionGenerada(sec.id) && metExtraerGanttsSeccion(sec.id).length) ? `<button class="met-excel-btn" data-excel-sec="${sec.id}" title="Descargar la Carta Gantt de este capítulo como planilla Excel">📊 Excel</button>` : ''}
           ${(() => {
             const regenerando = METODOLOGIA_STATE.regenSecId === sec.id;
             const yaGenerada = metodologiaSeccionGenerada(sec.id);
@@ -21532,6 +21543,22 @@ function renderPaso2Estructura(body) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       abrirVisorSeccionMetodologia(btn.dataset.verSec);
+    });
+  });
+  // Botón "📊 Excel": descarga la Carta Gantt del capítulo
+  body.querySelectorAll('[data-excel-sec]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const orig = btn.innerHTML;
+      btn.disabled = true; btn.innerHTML = '⏳ Excel…';
+      try {
+        await descargarGanttMetodologiaExcel(btn.dataset.excelSec);
+      } catch (err) {
+        console.error('Error exportando Gantt a Excel:', err);
+        alert('No se pudo generar el Excel de la Carta Gantt: ' + (err && err.message ? err.message : err));
+      } finally {
+        btn.disabled = false; btn.innerHTML = orig;
+      }
     });
   });
   // Selector "☐ 📘": marca/desmarca el capítulo para la exportación a Word
@@ -22182,6 +22209,158 @@ function abrirVisorSeccionMetodologia(secId) {
 
 // Descarga UNA sección de la metodología como documento Word (heading + contenido).
 // Reutiliza el mismo parser markdown→docx que el Word completo, para consistencia.
+// =====================================================================
+// CARTA GANTT → EXCEL (botón "📊 Excel" en cada capítulo con Gantt)
+// =====================================================================
+// Busca en el contenido generado de una sección las tablas markdown que son
+// Carta Gantt (columnas con █) y devuelve [{ titulo, header, rows, ganttCols, ncols }].
+// Si el capítulo no tiene contenido (o no se ha generado) devuelve [].
+function metExtraerGanttsSeccion(secId) {
+  const md = String((METODOLOGIA_STATE.contenidos || {})[secId] || '');
+  if (!md.trim()) return [];
+  const lineas = md.split('\n');
+  const out = [];
+  let ultimoTitulo = '';
+  for (let i = 0; i < lineas.length; i++) {
+    const l = lineas[i].trimEnd();
+    const h = l.match(/^#{1,6}\s+(.*)$/);
+    if (h) { ultimoTitulo = h[1].replace(/\*\*/g, '').trim(); continue; }
+    if (!MET_TABLA_LINEA_RE.test(l)) {
+      // Una línea en negrita sola también sirve de título ("**Carta Gantt resumida**")
+      const neg = l.trim().match(/^\*\*(.+?)\*\*:?$/);
+      if (neg) ultimoTitulo = neg[1].trim();
+      continue;
+    }
+    const bloque = [];
+    while (i < lineas.length && MET_TABLA_LINEA_RE.test(lineas[i].trimEnd())) { bloque.push(lineas[i].trimEnd()); i++; }
+    i--;
+    const t = metParseTablaMd(bloque);
+    if (t.ganttCols.size > 0) out.push({ titulo: ultimoTitulo, ...t });
+  }
+  return out;
+}
+
+async function descargarGanttMetodologiaExcel(secId) {
+  if (typeof ExcelJS === 'undefined') throw new Error('Librería ExcelJS no cargada. Verifica la conexión a internet.');
+  const sec = METODOLOGIA_STATE.estructura.find(s => s.id === secId);
+  if (!sec) throw new Error('Sección no encontrada.');
+  const gantts = metExtraerGanttsSeccion(secId);
+  if (!gantts.length) throw new Error('Este capítulo no contiene una Carta Gantt.');
+
+  const lic = (typeof APP_STATE !== 'undefined' && APP_STATE.licitaciones)
+    ? APP_STATE.licitaciones.find(l => l.id === APP_STATE.currentLicId) : null;
+  const nombreLic = (lic && lic.nombre) || 'Proyecto';
+  const numero = (lic && lic.numero) || '';
+  const empresa = (METODOLOGIA_STATE.empresa && METODOLOGIA_STATE.empresa.nombre) || '';
+
+  const VERDE = 'FF1F3D2E', BARRA = 'FF2E7D32', GRUPO = 'FFE8F0EA', BORDE = 'FFD6DDD8';
+  const borde = { style: 'thin', color: { argb: BORDE } };
+  const bordes = { top: borde, left: borde, bottom: borde, right: borde };
+  const limpiar = (c) => String(c || '').replace(/\*\*/g, '').replace(/<br\s*\/?>/gi, ' ').trim();
+  const esNegrita = (c) => /^\s*\*\*.+\*\*\s*$/.test(String(c || ''));
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'ConQ';
+  wb.created = new Date();
+  const usados = new Set();
+
+  gantts.forEach((g, gi) => {
+    // Nombre de hoja (máx 31, sin caracteres prohibidos, único)
+    let nombreHoja = gantts.length === 1 ? 'Carta Gantt' : (g.titulo || `Gantt ${gi + 1}`);
+    nombreHoja = nombreHoja.replace(/[\\\/\?\*\[\]:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31) || `Gantt ${gi + 1}`;
+    let base = nombreHoja, k = 2;
+    while (usados.has(nombreHoja.toLowerCase())) nombreHoja = (base.slice(0, 27) + ' (' + k++ + ')');
+    usados.add(nombreHoja.toLowerCase());
+
+    const ws = wb.addWorksheet(nombreHoja, {
+      pageSetup: { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+                   margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } },
+    });
+    const ncols = g.ncols;
+    const header = g.header || Array.from({ length: ncols }, (_, j) => g.ganttCols.has(j) ? '' : (j === 0 ? 'Actividad' : ''));
+
+    // Encabezado del documento
+    const tituloDoc = !g.titulo ? 'CARTA GANTT' : (/gantt/i.test(g.titulo) ? g.titulo : 'CARTA GANTT — ' + g.titulo);
+    const r1 = ws.addRow([tituloDoc]);
+    r1.font = { bold: true, size: 14, color: { argb: VERDE } };
+    const r2 = ws.addRow([(numero ? numero + ' · ' : '') + nombreLic]);
+    r2.font = { size: 11, color: { argb: 'FF444444' } };
+    const r3 = ws.addRow([[sec.label, empresa].filter(Boolean).join(' · ')]);
+    r3.font = { size: 10, italic: true, color: { argb: 'FF666666' } };
+    [1, 2, 3].forEach(n => ws.mergeCells(n, 1, n, Math.max(ncols, 1)));
+    ws.addRow([]);
+
+    // Fila de encabezados de la tabla
+    const filaHead = ws.addRow(header.map(limpiar));
+    filaHead.height = 30;
+    filaHead.eachCell({ includeEmpty: true }, (cell, col) => {
+      if (col > ncols) return;
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: g.ganttCols.has(col - 1) ? 9 : 10 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: VERDE } };
+      cell.alignment = { vertical: 'middle', horizontal: g.ganttCols.has(col - 1) ? 'center' : 'left', wrapText: true };
+      cell.border = bordes;
+    });
+    const filaHeadIdx = filaHead.number;
+
+    // Filas de actividades
+    g.rows.forEach(r => {
+      const textoCols = r.filter((_, j) => !g.ganttCols.has(j));
+      const sinBarras = r.every((c, j) => !g.ganttCols.has(j) || !metEsCeldaBarra(c));
+      const esGrupo = esNegrita(r[0]) || (sinBarras && textoCols.filter(c => limpiar(c)).length === 1 && limpiar(r[0]));
+      const fila = ws.addRow(r.map((c, j) => g.ganttCols.has(j) ? '' : limpiar(c)));
+      for (let j = 0; j < ncols; j++) {
+        const cell = fila.getCell(j + 1);
+        cell.border = bordes;
+        if (g.ganttCols.has(j)) {
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          if (metEsCeldaBarra(r[j])) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BARRA } };
+          } else if (esGrupo) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRUPO } };
+          }
+        } else {
+          cell.alignment = { vertical: 'middle', wrapText: true };
+          if (esGrupo) {
+            cell.font = { bold: true, color: { argb: VERDE } };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRUPO } };
+          } else if (esNegrita(r[j])) {
+            cell.font = { bold: true };
+          }
+        }
+      }
+    });
+
+    // Anchos: columnas de período angostas; columnas de texto según contenido
+    for (let j = 0; j < ncols; j++) {
+      const col = ws.getColumn(j + 1);
+      if (g.ganttCols.has(j)) {
+        const hl = limpiar(header[j]).length;
+        col.width = Math.min(Math.max(5, hl + 2), 12);
+      } else {
+        const largos = [header[j], ...g.rows.map(r => r[j])].map(c => limpiar(c).length);
+        col.width = Math.min(Math.max(10, Math.max(...largos) + 2), j === 0 ? 55 : 30);
+      }
+    }
+
+    // Congelar encabezado y columnas de texto iniciales
+    let xSplit = 0;
+    while (xSplit < ncols && !g.ganttCols.has(xSplit)) xSplit++;
+    ws.views = [{ state: 'frozen', xSplit: xSplit < ncols ? xSplit : 0, ySplit: filaHeadIdx }];
+    ws.pageSetup.printTitlesRow = `${filaHeadIdx}:${filaHeadIdx}`;
+  });
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const safeNum = (numero || 'licitacion').replace(/[^\w\-]/g, '_');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `Carta_Gantt_${safeNum}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  if (typeof mostrarToast === 'function') mostrarToast('📊 Carta Gantt descargada en Excel');
+}
+
 async function descargarSeccionMetodologiaWord(secId) {
   if (typeof docx === 'undefined') {
     throw new Error('Librería docx no cargada. Verifica conexión a CDN.');
