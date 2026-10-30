@@ -5584,6 +5584,10 @@
   .met-visor-editor .mve-org { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #FAFCFB; text-align: center; }
   .met-visor-editor .mve-org.mve-sug { background: #FFF8E6; }
   .met-visor-editor .mve-org-edit { text-align: left; margin-top: 8px; }
+  .met-visor-editor .mve-org-acciones { margin-top: 8px; }
+  .met-visor-editor .mve-org-ia { font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 7px; border: 1px solid #047857; background: #ECFDF5; color: #047857; cursor: pointer; }
+  .met-visor-editor .mve-org-ia:hover:not(:disabled) { background: #D1FAE5; }
+  .met-visor-editor .mve-org-ia:disabled { opacity: 0.7; cursor: default; }
   .met-visor-editor .mve-org-edit summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--accent); }
   .met-visor-editor .mve-org-hint { font-size: 11px; color: var(--text-mute); margin: 6px 0; }
   .met-visor-editor .mve-org-ta, .met-visor-editor .mve-code-ta { width: 100%; box-sizing: border-box; font-family: 'Courier New', monospace; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: #fff; resize: vertical; }
@@ -21934,23 +21938,35 @@ function metParseOrganigrama(lineas) {
 function metAsciiAOrganigrama(lineasIn) {
   const L = (lineasIn || []).map(x => String(x)
     .replace(/[┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬]/g, '+').replace(/[─═]/g, '-').replace(/[│║]/g, '|'));
-  // --- 1) Cajas ---
+  // --- 1) Cajas (tolerante: la IA suele desalinear los bordes laterales unas columnas) ---
   const cajas = [];
-  const usado = new Set();
+  const TOL = 4;
+  const barraCerca = (ln, col, desde) => {
+    for (let d = 0; d <= TOL; d++) {
+      for (const c of (desde === 'izq' ? [col - d, col + d] : [col + d, col - d])) {
+        if (c >= 0 && ln[c] === '|') return c;
+      }
+    }
+    return -1;
+  };
   for (let i = 0; i < L.length - 1; i++) {
     const ln = L[i];
-    for (let a = 0; a < ln.length; a++) {
-      if (ln[a] !== '+' || usado.has(i + ':' + a)) continue;
-      for (let b = a + 2; b < ln.length; b++) {
-        if (!/[-+=v^]/.test(ln[b])) break;
-        if (ln[b] !== '+') continue;
-        const sig = L[i + 1] || '';
-        if (sig[a] !== '|' || sig[b] !== '|') continue;
-        const textos = []; let k = i + 1;
-        while (k < L.length && (L[k][a] === '|') && (L[k][b] === '|')) { const t = L[k].slice(a + 1, b).trim(); if (t) textos.push(t); k++; }
-        if (textos.length) { cajas.push({ fila: i, a, b, c: (a + b) / 2, textos }); usado.add(i + ':' + a); }
-        break;
+    const re = /\+[-+=v^]{3,}\+/g;
+    let m;
+    while ((m = re.exec(ln))) {
+      const a = m.index, b = m.index + m[0].length - 1;
+      const textos = []; let k = i + 1;
+      while (k < L.length) {
+        const lk = L[k];
+        // Fin de la caja: borde inferior en la zona de la caja
+        if (/\+[-+=v^]{3,}\+/.test(lk.slice(Math.max(0, a - TOL), b + TOL + 1))) break;
+        const ia = barraCerca(lk, a, 'izq'), ib = barraCerca(lk, b, 'der');
+        if (ia < 0 || ib < 0 || ib - ia < 3) break;
+        const t = lk.slice(ia + 1, ib).replace(/\|/g, ' ').trim();
+        if (t) textos.push(t);
+        k++;
       }
+      if (textos.length && k > i + 1 && k < L.length) cajas.push({ fila: i, a, b, c: (a + b) / 2, textos });
     }
   }
   if (cajas.length >= 2) {
@@ -21968,7 +21984,10 @@ function metAsciiAOrganigrama(lineasIn) {
     const out = [];
     const emitir = (c, d) => {
       c.hijos.sort((x, y) => x.c - y.c);
-      out.push('-'.repeat(d) + c.textos[0] + (c.textos.length > 1 ? ' | ' + c.textos.slice(1).join(' ') : ''));
+      // Título = líneas del nombre (pueden ser varias); detalle = líneas entre paréntesis
+      const tit = c.textos.filter(t => !/^\(.*\)$/.test(t)).join(' ').replace(/\s+/g, ' ');
+      const det = c.textos.filter(t => /^\(.*\)$/.test(t)).map(t => t.replace(/^\(|\)$/g, '')).join(' · ');
+      out.push('-'.repeat(d) + (tit || det) + (tit && det ? ' | ' + det : ''));
       c.hijos.forEach(h => emitir(h, d + 1));
     };
     cajas.filter(c => !c.padre).sort((x, y) => x.c - y.c).forEach(c => emitir(c, 0));
@@ -21987,6 +22006,43 @@ function metAsciiAOrganigrama(lineasIn) {
     return out.filter(x => x.replace(/-/g, '').trim()).length >= 2 ? out : null;
   }
   return null;
+}
+
+// Pide a la IA que rearme el organigrama con TODOS los cargos descritos en el capítulo.
+// Devuelve las líneas del bloque ("--Cargo | detalle").
+async function metCompletarOrganigramaIA(markdownCapitulo, lineasActuales) {
+  const systemPrompt = 'Eres un experto en propuestas técnicas para licitaciones de construcción y minería en Chile. ' +
+    'Tu tarea es construir el organigrama del equipo de un contrato a partir del texto de un capítulo de metodología.';
+  const userPrompt =
+    'TEXTO DEL CAPÍTULO:\n"""\n' + String(markdownCapitulo || '').slice(0, 60000) + '\n"""\n\n' +
+    'ORGANIGRAMA ACTUAL (incompleto):\n' + (lineasActuales || []).join('\n') + '\n\n' +
+    'INSTRUCCIONES:\n' +
+    '- Incluye TODOS los cargos, roles y cuadrillas mencionados en el texto (personal indirecto, staff, supervisión, capataces, cuadrillas y oficios). No omitas ninguno.\n' +
+    '- NO inventes cargos que el texto no mencione.\n' +
+    '- Respeta las dependencias que describe el texto. Si no las describe: el staff (prevención, oficina técnica, calidad, planificación) depende del Administrador de Contrato; los Jefes de Terreno dependen del Administrador; capataces y cuadrillas dependen del Jefe de Terreno de su sitio/frente.\n' +
+    '- Si un cargo tiene varias personas o turno, ponlo en el detalle (ej: "Prevencionista de Riesgo | 2 · Turno 7x7"). Si hay un cargo por sitio (ej. LB y LT), crea un nodo por sitio.\n' +
+    '- Los oficios de cuadrilla (carpinteros, soldadores, albañiles, etc.) van como nodos bajo la cuadrilla o capataz que corresponda, con su cantidad en el detalle.\n' +
+    '- FORMATO DE SALIDA OBLIGATORIO: responde SOLO con el bloque, una línea por cargo, con guiones al inicio para el nivel (sin guion = cargo superior, "-" = reporta a él, "--" = siguiente nivel) y " | " para el detalle:\n' +
+    '[[ORGANIGRAMA]]\nAdministrador de Contrato | Presencia permanente\n-Prevencionista de Riesgo | 2 · Turno 7x7\n-Jefe de Terreno LB\n--Capataz LB\n---Cuadrillas LB | 2 equipos\n[[FIN ORGANIGRAMA]]';
+  const modeloPrevio = chatState.currentModel;
+  if (chatState.googleApiKey && MODELS['gemini-pro']) chatState.currentModel = 'gemini-pro';
+  try {
+    const resp = await llamarIAConContexto(systemPrompt, userPrompt, []);
+    const modelCfg = MODELS[chatState.currentModel] || MODELS[modeloPrevio];
+    const tIn = resp.tokensIn || 0, tOut = resp.tokensOut || 0;
+    chatState.totalTokensIn += tIn; chatState.totalTokensOut += tOut;
+    if (modelCfg) chatState.totalCost += (tIn / 1e6) * modelCfg.priceInput + (tOut / 1e6) * modelCfg.priceOutput;
+    if (typeof actualizarUsageStats === 'function') actualizarUsageStats();
+    let txt = String(resp.text || '');
+    const ini = txt.search(/\[\[\s*ORGANIGRAMA\s*\]\]/i), fin = txt.search(/\[\[\s*FIN\s+ORGANIGRAMA\s*\]\]/i);
+    if (ini >= 0) txt = txt.slice(txt.indexOf(']]', ini) + 2, fin > ini ? fin : undefined);
+    txt = txt.replace(/```[\w-]*/g, '');
+    const lineas = txt.split('\n').map(x => x.replace(/\s+$/, '')).filter(x => x.trim() && !/^\s*\[\[/.test(x));
+    if (metParseOrganigrama(lineas).length === 0) throw new Error('La IA no devolvió un organigrama válido.');
+    return lineas;
+  } finally {
+    chatState.currentModel = modeloPrevio;
+  }
 }
 
 // Dibuja el organigrama en un canvas y devuelve { dataUrl, bytes, ancho, alto } (ancho/alto en px CSS).
@@ -22047,7 +22103,8 @@ function metRenderOrganigrama(lineas) {
     const ybus = y0 + H + GY / 2, cx = n.x + W / 2;
     lineasCon.push([[cx, y0 + H], [cx, ybus]]);
     const cxs = n.hijos.map(h => h.x + W / 2);
-    if (n.hijos.length > 1) lineasCon.push([[Math.min(...cxs), ybus], [Math.max(...cxs), ybus]]);
+    const xMin = Math.min(cx, ...cxs), xMax = Math.max(cx, ...cxs);
+    if (xMax - xMin > 0.5) lineasCon.push([[xMin, ybus], [xMax, ybus]]);
     n.hijos.forEach(h => lineasCon.push([[h.x + W / 2, ybus], [h.x + W / 2, h.y]]));
   };
   let x = PAD;
@@ -22220,6 +22277,7 @@ function _mdToEditableHtml(md) {
         const r = metRenderOrganigrama(_esp.lineas);
         html += `<div data-md="org" class="mve-org${enSug ? ' mve-sug' : ''}" contenteditable="false">`
           + (r ? `<img class="mve-org-img" src="${r.dataUrl}" alt="Organigrama" style="max-width:100%;width:${r.ancho}px;">` : '')
+          + `<div class="mve-org-acciones"><button type="button" class="mve-org-ia" title="La IA lee todo el capítulo y rearma el organigrama incluyendo todos los cargos descritos">✨ Completar con todos los cargos del capítulo</button></div>`
           + `<details class="mve-org-edit"><summary>✏️ Editar organigrama</summary>`
           + `<div class="mve-org-hint">Una línea por cargo. Los guiones al inicio indican el nivel (sin guion = cargo superior, "-" = reporta a él, "--" = siguiente nivel). Usa " | " para agregar un detalle.</div>`
           + `<textarea class="mve-org-ta" rows="${Math.min(14, _esp.lineas.length + 2)}" spellcheck="false">${raw}</textarea></details></div>`;
@@ -22399,6 +22457,28 @@ function abrirVisorSeccionMetodologia(secId) {
       savedMsg.textContent = '✓ Guardado';
       clearTimeout(editor._savedTimer);
       editor._savedTimer = setTimeout(() => { if (savedMsg) savedMsg.textContent = ''; }, 1500);
+    }
+  });
+  // Organigrama: "✨ Completar con todos los cargos del capítulo" (IA)
+  editor.addEventListener('click', async (e) => {
+    const btn = e.target.closest && e.target.closest('.mve-org-ia');
+    if (!btn || !editor.contains(btn) || btn.disabled) return;
+    e.preventDefault();
+    const caja = btn.closest('[data-md="org"]');
+    const ta = caja && caja.querySelector('.mve-org-ta');
+    if (!ta) return;
+    const orig = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = '⏳ Leyendo el capítulo…';
+    try {
+      const lineas = await metCompletarOrganigramaIA(_editableHtmlToMd(editor), ta.value.split('\n'));
+      ta.value = lineas.join('\n');
+      ta.rows = Math.min(20, lineas.length + 2);
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      btn.innerHTML = '✓ Organigrama actualizado';
+      setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 2500);
+    } catch (err) {
+      alert('No se pudo completar el organigrama: ' + (err && err.message ? err.message : err));
+      btn.innerHTML = orig; btn.disabled = false;
     }
   });
   // Organigrama: al editar su texto se redibuja la imagen
@@ -24958,8 +25038,8 @@ Antes de redactar, recorre TODOS los documentos entregados (Bases Técnicas, Bas
 - Distingue obligatorio (debe / exige / excluyente) de deseable (se valora / recomienda / preferentemente): lo deseable se presenta como deseable, citando el texto, nunca como exigencia.
 - Excepciones (no requieren marca): lo que el usuario pidió explícitamente en sus instrucciones de contexto o de subsección, y la referencia textual obligatoria cuando el guion la entrega.
 === FIN TRAZABILIDAD ===`;
-  const prompt = basePrompt + instruccionSeccion + contextoSubs + apoyoAnalisis + barridoRequisitos + reglaTrazabilidad + `\n\nREGLAS CRÍTICAS:\n- Tono profesional, propio de una propuesta técnica formal chilena.\n- Usa headings markdown ### y #### dentro de tu respuesta.\n- NO incluyas el título de sección (### I. OBJETIVO Y ALCANCE) — empieza directo con el contenido o subsecciones.\n- NO inventes datos. Si algo no está en las bases, omítelo o preséntalo dentro de un bloque [[SUGERENCIA — NO EXIGIDO EN LAS BASES]] … [[FIN SUGERENCIA]].\n- ${largoRegla} La extensión NUNCA justifica agregar compromisos no exigidos: profundiza en los requisitos reales.\n- CARTA GANTT: si presentas una Carta Gantt o programa en el tiempo, hazlo como tabla markdown con columnas de texto (Fase/Actividad, Duración) seguidas de UNA COLUMNA POR PERÍODO (M1, M2, M3… o S1, S2… si es por semanas) y marca con ████ las celdas de los períodos en que se ejecuta cada actividad (deja vacías las demás). No uses una sola columna de texto tipo "Mes 2 - 23".\n- ORGANIGRAMAS Y JERARQUÍAS: NUNCA dibujes diagramas con caracteres (+---+, |, ├──, flechas) ni uses bloques de código (\`\`\`). Toda estructura jerárquica (organigrama, líneas de reporte, dependencias) va EXCLUSIVAMENTE en este bloque, una línea por cargo, con guiones al inicio para indicar el nivel y \" | \" para un detalle opcional:\n[[ORGANIGRAMA]]\nAdministrador de Contrato | Presencia permanente\n-Jefe de Terreno LB\n--Cuadrillas LB | 2 equipos\n-Jefe de Terreno LT\n--Cuadrilla LT | 1 equipo\n[[FIN ORGANIGRAMA]]\n  La app lo dibuja como organigrama gráfico en el Word. Antes o después del bloque puedes explicar en prosa las líneas de reporte y coordinación.`;
-  const MET_REGLA_ORGANIGRAMA = `ORGANIGRAMAS Y JERARQUÍAS: NUNCA dibujes diagramas con caracteres (+---+, |, ├──, flechas) ni uses bloques de código (\`\`\`). Toda estructura jerárquica (organigrama, líneas de reporte, dependencias) va EXCLUSIVAMENTE en este bloque, una línea por cargo, con guiones al inicio para indicar el nivel y \" | \" para un detalle opcional:\n[[ORGANIGRAMA]]\nAdministrador de Contrato | Presencia permanente\n-Jefe de Terreno LB\n--Cuadrillas LB | 2 equipos\n-Jefe de Terreno LT\n--Cuadrilla LT | 1 equipo\n[[FIN ORGANIGRAMA]]\n  La app lo dibuja como organigrama gráfico en el Word. Antes o después del bloque puedes explicar en prosa las líneas de reporte y coordinación.`;
+  const prompt = basePrompt + instruccionSeccion + contextoSubs + apoyoAnalisis + barridoRequisitos + reglaTrazabilidad + `\n\nREGLAS CRÍTICAS:\n- Tono profesional, propio de una propuesta técnica formal chilena.\n- Usa headings markdown ### y #### dentro de tu respuesta.\n- NO incluyas el título de sección (### I. OBJETIVO Y ALCANCE) — empieza directo con el contenido o subsecciones.\n- NO inventes datos. Si algo no está en las bases, omítelo o preséntalo dentro de un bloque [[SUGERENCIA — NO EXIGIDO EN LAS BASES]] … [[FIN SUGERENCIA]].\n- ${largoRegla} La extensión NUNCA justifica agregar compromisos no exigidos: profundiza en los requisitos reales.\n- CARTA GANTT: si presentas una Carta Gantt o programa en el tiempo, hazlo como tabla markdown con columnas de texto (Fase/Actividad, Duración) seguidas de UNA COLUMNA POR PERÍODO (M1, M2, M3… o S1, S2… si es por semanas) y marca con ████ las celdas de los períodos en que se ejecuta cada actividad (deja vacías las demás). No uses una sola columna de texto tipo "Mes 2 - 23".\n- ORGANIGRAMAS Y JERARQUÍAS: NUNCA dibujes diagramas con caracteres (+---+, |, ├──, flechas) ni uses bloques de código (\`\`\`). Toda estructura jerárquica (organigrama, líneas de reporte, dependencias) va EXCLUSIVAMENTE en este bloque, una línea por cargo, con guiones al inicio para indicar el nivel y \" | \" para un detalle opcional:\n[[ORGANIGRAMA]]\nAdministrador de Contrato | Presencia permanente\n-Jefe de Terreno LB\n--Cuadrillas LB | 2 equipos\n-Jefe de Terreno LT\n--Cuadrilla LT | 1 equipo\n[[FIN ORGANIGRAMA]]\n  El organigrama debe incluir TODOS los cargos, cuadrillas y oficios que describas en la sección (con su cantidad en el detalle), sin omitir ninguno. La app lo dibuja como organigrama gráfico en el Word. Antes o después del bloque puedes explicar en prosa las líneas de reporte y coordinación.`;
+  const MET_REGLA_ORGANIGRAMA = `ORGANIGRAMAS Y JERARQUÍAS: NUNCA dibujes diagramas con caracteres (+---+, |, ├──, flechas) ni uses bloques de código (\`\`\`). Toda estructura jerárquica (organigrama, líneas de reporte, dependencias) va EXCLUSIVAMENTE en este bloque, una línea por cargo, con guiones al inicio para indicar el nivel y \" | \" para un detalle opcional:\n[[ORGANIGRAMA]]\nAdministrador de Contrato | Presencia permanente\n-Jefe de Terreno LB\n--Cuadrillas LB | 2 equipos\n-Jefe de Terreno LT\n--Cuadrilla LT | 1 equipo\n[[FIN ORGANIGRAMA]]\n  El organigrama debe incluir TODOS los cargos, cuadrillas y oficios que describas en la sección (con su cantidad en el detalle), sin omitir ninguno. La app lo dibuja como organigrama gráfico en el Word. Antes o después del bloque puedes explicar en prosa las líneas de reporte y coordinación.`;
 
   const _metModel = metodologiaModelKey();
   const provider = MODELS[_metModel].provider;
