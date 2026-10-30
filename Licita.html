@@ -22518,9 +22518,67 @@ function metExtraerGanttsSeccion(secId) {
     while (i < lineas.length && MET_TABLA_LINEA_RE.test(lineas[i].trimEnd())) { bloque.push(lineas[i].trimEnd()); i++; }
     i--;
     const t = metParseTablaMd(bloque);
-    if (t.ganttCols.size > 0) out.push({ titulo: ultimoTitulo, ...t });
+    if (t.ganttCols.size > 0) { out.push({ titulo: ultimoTitulo, ...t }); continue; }
+    const conv = metTablaAGanttBarras(t, ultimoTitulo);
+    if (conv) out.push({ titulo: ultimoTitulo, ...conv });
   }
   return out;
+}
+
+// Convierte una tabla "de texto" con una columna de períodos ("Mes 1", "Mes 2 - 23",
+// "Semanas 3 a 5", "M4-M6") en una tabla Gantt con columnas por período y barras █.
+// Devuelve null si la tabla no parece una programación.
+const MET_PERIODO_RE = /\b(mes(?:es)?|semanas?|sem|d[ií]as?)\s*\.?\s*\d{1,3}|\b[MSD]\s?\d{1,3}\b/i;
+function metPeriodosDeCelda(txt) {
+  const t = String(txt || '').replace(/\*\*/g, '');
+  if (!MET_PERIODO_RE.test(t)) return null;
+  const u = /semana|\bsem\b|\bS\s?\d/i.test(t) ? 'S' : (/d[ií]a|\bD\s?\d/i.test(t) ? 'D' : 'M');
+  const desde = t.search(MET_PERIODO_RE);
+  const resto = t.slice(desde);
+  const set = new Set();
+  const re = /(\d{1,3})\s*(?:(?:-|–|—|al|a|hasta)\s*(?:(?:mes(?:es)?|semanas?|sem|d[ií]as?|[MSD])\s*\.?\s*)?(\d{1,3}))?/gi;
+  let m;
+  while ((m = re.exec(resto))) {
+    const x = parseInt(m[1], 10), y = m[2] ? parseInt(m[2], 10) : x;
+    if (!x || y < x || y - x > 400) continue;
+    for (let k = x; k <= y; k++) set.add(k);
+  }
+  return set.size ? { u, periodos: set } : null;
+}
+function metTablaAGanttBarras(t, titulo) {
+  if (!t || !t.rows || t.rows.length < 2) return null;
+  const hdr = t.header || [];
+  let mejor = -1, mejorRatio = 0;
+  for (let j = 0; j < t.ncols; j++) {
+    const celdas = t.rows.map(r => r[j]).filter(c => String(c || '').trim());
+    if (celdas.length < 2) continue;
+    const ok = celdas.filter(c => metPeriodosDeCelda(c)).length;
+    const ratio = ok / celdas.length;
+    if (ok >= 2 && ratio > mejorRatio) { mejorRatio = ratio; mejor = j; }
+  }
+  if (mejor < 0 || mejorRatio < 0.6) return null;
+  // Evitar falsos positivos: debe ser una programación por título o por encabezado
+  const pista = /gantt|programa|cronograma|planificaci|calendario|hitos?/i.test(titulo || '')
+             || /mes|per[ií]odo|plazo|calendario|semana|programa/i.test(String(hdr[mejor] || ''));
+  if (!pista) return null;
+  const parsed = t.rows.map(r => metPeriodosDeCelda(r[mejor]));
+  const unidades = parsed.filter(Boolean).map(p => p.u);
+  let u = ['M', 'S', 'D'].sort((a, b) => unidades.filter(x => x === b).length - unidades.filter(x => x === a).length)[0];
+  let max = Math.max(...parsed.filter(Boolean).map(p => Math.max(...p.periodos)));
+  let factor = 1;
+  if (u === 'D' && max > 62) { u = 'S'; factor = 7; max = Math.ceil(max / 7); }
+  if (!isFinite(max) || max < 1 || max > 260) return null;
+  const textoCols = [];
+  for (let j = 0; j < t.ncols; j++) if (j !== mejor) textoCols.push(j);
+  const header = [...textoCols.map(j => hdr[j] || ''), ...Array.from({ length: max }, (_, k) => u + (k + 1))];
+  const rows = t.rows.map((r, i) => {
+    const p = parsed[i];
+    const on = new Set();
+    if (p) p.periodos.forEach(k => on.add(Math.ceil(k / factor)));
+    return [...textoCols.map(j => r[j]), ...Array.from({ length: max }, (_, k) => on.has(k + 1) ? '████' : '')];
+  });
+  const ganttCols = new Set(Array.from({ length: max }, (_, k) => textoCols.length + k));
+  return { header, rows, ganttCols, ncols: header.length };
 }
 
 async function descargarGanttMetodologiaExcel(secId) {
@@ -24729,7 +24787,7 @@ Antes de redactar, recorre TODOS los documentos entregados (Bases Técnicas, Bas
 - Distingue obligatorio (debe / exige / excluyente) de deseable (se valora / recomienda / preferentemente): lo deseable se presenta como deseable, citando el texto, nunca como exigencia.
 - Excepciones (no requieren marca): lo que el usuario pidió explícitamente en sus instrucciones de contexto o de subsección, y la referencia textual obligatoria cuando el guion la entrega.
 === FIN TRAZABILIDAD ===`;
-  const prompt = basePrompt + instruccionSeccion + contextoSubs + apoyoAnalisis + barridoRequisitos + reglaTrazabilidad + `\n\nREGLAS CRÍTICAS:\n- Tono profesional, propio de una propuesta técnica formal chilena.\n- Usa headings markdown ### y #### dentro de tu respuesta.\n- NO incluyas el título de sección (### I. OBJETIVO Y ALCANCE) — empieza directo con el contenido o subsecciones.\n- NO inventes datos. Si algo no está en las bases, omítelo o preséntalo dentro de un bloque [[SUGERENCIA — NO EXIGIDO EN LAS BASES]] … [[FIN SUGERENCIA]].\n- ${largoRegla} La extensión NUNCA justifica agregar compromisos no exigidos: profundiza en los requisitos reales.\n- ORGANIGRAMAS Y JERARQUÍAS: NUNCA dibujes diagramas con caracteres (+---+, |, ├──, flechas) ni uses bloques de código (\`\`\`). Toda estructura jerárquica (organigrama, líneas de reporte, dependencias) va EXCLUSIVAMENTE en este bloque, una línea por cargo, con guiones al inicio para indicar el nivel y \" | \" para un detalle opcional:\n[[ORGANIGRAMA]]\nAdministrador de Contrato | Presencia permanente\n-Jefe de Terreno LB\n--Cuadrillas LB | 2 equipos\n-Jefe de Terreno LT\n--Cuadrilla LT | 1 equipo\n[[FIN ORGANIGRAMA]]\n  La app lo dibuja como organigrama gráfico en el Word. Antes o después del bloque puedes explicar en prosa las líneas de reporte y coordinación.`;
+  const prompt = basePrompt + instruccionSeccion + contextoSubs + apoyoAnalisis + barridoRequisitos + reglaTrazabilidad + `\n\nREGLAS CRÍTICAS:\n- Tono profesional, propio de una propuesta técnica formal chilena.\n- Usa headings markdown ### y #### dentro de tu respuesta.\n- NO incluyas el título de sección (### I. OBJETIVO Y ALCANCE) — empieza directo con el contenido o subsecciones.\n- NO inventes datos. Si algo no está en las bases, omítelo o preséntalo dentro de un bloque [[SUGERENCIA — NO EXIGIDO EN LAS BASES]] … [[FIN SUGERENCIA]].\n- ${largoRegla} La extensión NUNCA justifica agregar compromisos no exigidos: profundiza en los requisitos reales.\n- CARTA GANTT: si presentas una Carta Gantt o programa en el tiempo, hazlo como tabla markdown con columnas de texto (Fase/Actividad, Duración) seguidas de UNA COLUMNA POR PERÍODO (M1, M2, M3… o S1, S2… si es por semanas) y marca con ████ las celdas de los períodos en que se ejecuta cada actividad (deja vacías las demás). No uses una sola columna de texto tipo "Mes 2 - 23".\n- ORGANIGRAMAS Y JERARQUÍAS: NUNCA dibujes diagramas con caracteres (+---+, |, ├──, flechas) ni uses bloques de código (\`\`\`). Toda estructura jerárquica (organigrama, líneas de reporte, dependencias) va EXCLUSIVAMENTE en este bloque, una línea por cargo, con guiones al inicio para indicar el nivel y \" | \" para un detalle opcional:\n[[ORGANIGRAMA]]\nAdministrador de Contrato | Presencia permanente\n-Jefe de Terreno LB\n--Cuadrillas LB | 2 equipos\n-Jefe de Terreno LT\n--Cuadrilla LT | 1 equipo\n[[FIN ORGANIGRAMA]]\n  La app lo dibuja como organigrama gráfico en el Word. Antes o después del bloque puedes explicar en prosa las líneas de reporte y coordinación.`;
   const MET_REGLA_ORGANIGRAMA = `ORGANIGRAMAS Y JERARQUÍAS: NUNCA dibujes diagramas con caracteres (+---+, |, ├──, flechas) ni uses bloques de código (\`\`\`). Toda estructura jerárquica (organigrama, líneas de reporte, dependencias) va EXCLUSIVAMENTE en este bloque, una línea por cargo, con guiones al inicio para indicar el nivel y \" | \" para un detalle opcional:\n[[ORGANIGRAMA]]\nAdministrador de Contrato | Presencia permanente\n-Jefe de Terreno LB\n--Cuadrillas LB | 2 equipos\n-Jefe de Terreno LT\n--Cuadrilla LT | 1 equipo\n[[FIN ORGANIGRAMA]]\n  La app lo dibuja como organigrama gráfico en el Word. Antes o después del bloque puedes explicar en prosa las líneas de reporte y coordinación.`;
 
   const _metModel = metodologiaModelKey();
