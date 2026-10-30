@@ -22581,6 +22581,59 @@ function metTablaAGanttBarras(t, titulo) {
   return { header, rows, ganttCols, ncols: header.length };
 }
 
+// Convierte una tabla Gantt (columnas de período con █) en fases y actividades
+// con semana de inicio / término. Meses y días se pasan a semanas.
+function metGanttAActividades(g) {
+  const limpiar = (c) => String(c || '').replace(/\*\*/g, '').replace(/<br\s*\/?>/gi, ' ').trim();
+  const esNegrita = (c) => /^\s*\*\*.+\*\*\s*$/.test(String(c || ''));
+  const hdr = (g.header || []).map(limpiar);
+  const gcols = [...g.ganttCols].sort((a, b) => a - b);
+  const tcols = [];
+  for (let j = 0; j < g.ncols; j++) if (!g.ganttCols.has(j)) tcols.push(j);
+  // Unidad de las columnas de período (S por defecto)
+  const etiquetas = gcols.map(j => hdr[j] || '').join(' ');
+  const unidad = /\b(s|sem|semana)\s*\d/i.test(etiquetas) ? 'S'
+               : /\b(m|mes)\s*\d/i.test(etiquetas) ? 'M'
+               : /\b(d|d[ií]a)\s*\d/i.test(etiquetas) ? 'D' : 'S';
+  // Período (1..n) de cada columna Gantt: número de la etiqueta o su posición
+  const nPer = gcols.map((j, k) => { const m = (hdr[j] || '').match(/(\d{1,3})/); return m ? parseInt(m[1], 10) : k + 1; });
+  const aSemanas = (a, b) => {
+    if (unidad === 'M') return [Math.floor((a - 1) * 52 / 12) + 1, Math.max(Math.floor((a - 1) * 52 / 12) + 1, Math.round(b * 52 / 12))];
+    if (unidad === 'D') return [Math.floor((a - 1) / 7) + 1, Math.ceil(b / 7)];
+    return [a, b];
+  };
+  // Columnas de fase y de actividad
+  const colFase = tcols.find(j => /fase|etapa/i.test(hdr[j] || ''));
+  let colAct = tcols.find(j => /actividad|tarea|hito|descripci|partida|trabajo/i.test(hdr[j] || ''));
+  if (colAct == null) colAct = tcols.find(j => j !== colFase && !/duraci|plazo|semana|fecha|inicio|t[eé]rmino|recurso|responsable/i.test(hdr[j] || ''));
+  if (colAct == null) colAct = tcols[0];
+  const items = [];
+  let faseActual = null;
+  const nuevaFase = (nombre) => { faseActual = { tipo: 'fase', nombre, inicio: null, fin: null, hijos: [] }; items.push(faseActual); return faseActual; };
+  g.rows.forEach(r => {
+    const on = [];
+    gcols.forEach((j, k) => { if (metEsCeldaBarra(r[j])) on.push(nPer[k]); });
+    const rango = on.length ? aSemanas(Math.min(...on), Math.max(...on)) : [null, null];
+    const act = limpiar(r[colAct]);
+    if (colFase != null && colFase !== colAct) {
+      const f = limpiar(r[colFase]);
+      if (f) nuevaFase(f);
+      if (act) {
+        const a = { tipo: 'act', nombre: act, inicio: rango[0], fin: rango[1] };
+        if (faseActual) faseActual.hijos.push(a); else items.push(a);
+      }
+      return;
+    }
+    const otrosTextos = tcols.filter(j => j !== colAct && limpiar(r[j])).length;
+    const esFase = act && (/^(fase|etapa)\b/i.test(act) || (esNegrita(r[colAct]) && !otrosTextos && !on.length));
+    if (esFase) { const f = nuevaFase(act); f.inicioPropio = rango[0]; f.finPropio = rango[1]; return; }
+    if (!act) return;
+    const a = { tipo: 'act', nombre: act, inicio: rango[0], fin: rango[1] };
+    if (faseActual) faseActual.hijos.push(a); else items.push(a);
+  });
+  return items;
+}
+
 async function descargarGanttMetodologiaExcel(secId) {
   if (typeof ExcelJS === 'undefined') throw new Error('Librería ExcelJS no cargada. Verifica la conexión a internet.');
   const sec = METODOLOGIA_STATE.estructura.find(s => s.id === secId);
@@ -22592,104 +22645,222 @@ async function descargarGanttMetodologiaExcel(secId) {
     ? APP_STATE.licitaciones.find(l => l.id === APP_STATE.currentLicId) : null;
   const nombreLic = (lic && lic.nombre) || 'Proyecto';
   const numero = (lic && lic.numero) || '';
-  const empresa = (METODOLOGIA_STATE.empresa && METODOLOGIA_STATE.empresa.nombre) || '';
 
-  const VERDE = 'FF1F3D2E', BARRA = 'FF2E7D32', GRUPO = 'FFE8F0EA', BORDE = 'FFD6DDD8';
-  const borde = { style: 'thin', color: { argb: BORDE } };
+  // Fecha de inicio: la de la licitación o el próximo lunes
+  let fechaInicio = null;
+  if (lic && lic.fechaInicioEstimada) { const d = new Date(lic.fechaInicioEstimada + 'T00:00:00'); if (!isNaN(d)) fechaInicio = d; }
+  if (!fechaInicio) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); fechaInicio = d; }
+  const fechaXls = new Date(Date.UTC(fechaInicio.getFullYear(), fechaInicio.getMonth(), fechaInicio.getDate()));
+  const plazoLicSem = lic && Number(lic.plazoEjecucionDias) > 0 ? Math.ceil(Number(lic.plazoEjecucionDias) / 7) : null;
+
+  // Paleta por fase: [barra de fase, barra de actividad, fondo fila fase]
+  const PALETA = [
+    ['FF6B7A8F', 'FF9AA6B5'], ['FF2F4F7F', 'FF6B88B0'], ['FF1F2F4F', 'FF4A5D80'],
+    ['FFB07D3A', 'FFD1A86E'], ['FF2E7D32', 'FF6FAF73'], ['FF6A4C93', 'FF9C84BD'],
+  ];
+  const ROJO = 'FFC0392B', AMARILLO = 'FFFFF9C4', AZUL_TXT = 'FF1A3FB5', CAB = 'FF1F3864';
+  const borde = { style: 'thin', color: { argb: 'FFD0D7E2' } };
   const bordes = { top: borde, left: borde, bottom: borde, right: borde };
-  const limpiar = (c) => String(c || '').replace(/\*\*/g, '').replace(/<br\s*\/?>/gi, ' ').trim();
-  const esNegrita = (c) => /^\s*\*\*.+\*\*\s*$/.test(String(c || ''));
+  const FMT_FECHA = 'dd-mm-yyyy';
+  const colL = (n) => { let t = ''; while (n > 0) { const m = (n - 1) % 26; t = String.fromCharCode(65 + m) + t; n = Math.floor((n - 1) / 26); } return t; };
 
   const wb = new ExcelJS.Workbook();
   wb.creator = 'ConQ';
   wb.created = new Date();
+  wb.calcProperties.fullCalcOnLoad = true;
   const usados = new Set();
 
   gantts.forEach((g, gi) => {
-    // Nombre de hoja (máx 31, sin caracteres prohibidos, único)
+    const items = metGanttAActividades(g);
+    if (!items.length) return;
     let nombreHoja = gantts.length === 1 ? 'Carta Gantt' : (g.titulo || `Gantt ${gi + 1}`);
     nombreHoja = nombreHoja.replace(/[\\\/\?\*\[\]:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31) || `Gantt ${gi + 1}`;
-    let base = nombreHoja, k = 2;
-    while (usados.has(nombreHoja.toLowerCase())) nombreHoja = (base.slice(0, 27) + ' (' + k++ + ')');
+    let base = nombreHoja, k2 = 2;
+    while (usados.has(nombreHoja.toLowerCase())) nombreHoja = base.slice(0, 27) + ' (' + k2++ + ')';
     usados.add(nombreHoja.toLowerCase());
 
+    // Semanas de la grilla: lo programado + holgura para poder alargar
+    const finMax = Math.max(1, ...items.flatMap(it => it.tipo === 'fase' ? [it.finPropio || 0, ...it.hijos.map(h => h.fin || 0)] : [it.fin || 0]));
+    const plazo = plazoLicSem || finMax;
+    const N = Math.min(260, Math.max(finMax, plazo) + Math.max(2, Math.round(Math.max(finMax, plazo) * 0.25)));
+    const C0 = 9; // primera columna de la grilla (I)
+    const ultCol = C0 + N - 1;
+
     const ws = wb.addWorksheet(nombreHoja, {
+      properties: { defaultRowHeight: 18 },
       pageSetup: { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0,
-                   margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } },
+                   margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
     });
-    const ncols = g.ncols;
-    const header = g.header || Array.from({ length: ncols }, (_, j) => g.ganttCols.has(j) ? '' : (j === 0 ? 'Actividad' : ''));
 
-    // Encabezado del documento
-    const tituloDoc = !g.titulo ? 'CARTA GANTT' : (/gantt/i.test(g.titulo) ? g.titulo : 'CARTA GANTT — ' + g.titulo);
-    const r1 = ws.addRow([tituloDoc]);
-    r1.font = { bold: true, size: 14, color: { argb: VERDE } };
-    const r2 = ws.addRow([(numero ? numero + ' · ' : '') + nombreLic]);
-    r2.font = { size: 11, color: { argb: 'FF444444' } };
-    const r3 = ws.addRow([[sec.label, empresa].filter(Boolean).join(' · ')]);
-    r3.font = { size: 10, italic: true, color: { argb: 'FF666666' } };
-    [1, 2, 3].forEach(n => ws.mergeCells(n, 1, n, Math.max(ncols, 1)));
-    ws.addRow([]);
+    // --- Encabezado ---
+    const titulo = (g.titulo && !/gantt/i.test(g.titulo) ? 'Carta Gantt — ' + g.titulo : (g.titulo || 'Carta Gantt del Servicio'))
+      + ' — ' + (numero ? numero + ' · ' : '') + nombreLic;
+    ws.getCell('A1').value = titulo;
+    ws.getCell('A1').font = { bold: true, size: 15, color: { argb: CAB } };
+    ws.getRow(1).height = 24;
 
-    // Fila de encabezados de la tabla
-    const filaHead = ws.addRow(header.map(limpiar));
-    filaHead.height = 30;
-    filaHead.eachCell({ includeEmpty: true }, (cell, col) => {
-      if (col > ncols) return;
-      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: g.ganttCols.has(col - 1) ? 9 : 10 };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: VERDE } };
-      cell.alignment = { vertical: 'middle', horizontal: g.ganttCols.has(col - 1) ? 'center' : 'left', wrapText: true };
-      cell.border = bordes;
+    ws.getCell('A2').value = 'Fecha de inicio del servicio:';
+    ws.mergeCells('A2:B2');
+    ws.getCell('A2').font = { bold: true };
+    const cFecha = ws.getCell('C2');
+    cFecha.value = fechaXls; cFecha.numFmt = FMT_FECHA;
+    cFecha.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: AMARILLO } };
+    cFecha.font = { bold: true, color: { argb: AZUL_TXT } }; cFecha.alignment = { horizontal: 'center' };
+    cFecha.note = 'Edita la fecha: todas las fechas de inicio y término se recalculan.';
+    ws.mergeCells('C2:D2');
+    ws.getCell('E2').value = 'Plazo BBTT (sem):';
+    ws.mergeCells('E2:F2');
+    ws.getCell('E2').font = { bold: true }; ws.getCell('E2').alignment = { horizontal: 'right' };
+    const cPlazo = ws.getCell('G2');
+    cPlazo.value = plazo;
+    cPlazo.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: AMARILLO } };
+    cPlazo.font = { bold: true, color: { argb: AZUL_TXT } }; cPlazo.alignment = { horizontal: 'center' };
+    cPlazo.note = 'Plazo exigido por las bases, en semanas.';
+
+    ws.getCell('A3').value = 'Edite solo las celdas amarillas (semana de inicio, semana de término y ruta crítica). Las barras, fechas, duraciones y fases se recalculan solas. Rojo = ruta crítica.';
+    ws.getCell('A3').font = { italic: true, size: 10, color: { argb: 'FF666666' } };
+
+    // --- Filas 5 (meses) y 6 (encabezados) ---
+    const FILA_MES = 5, FILA_HEAD = 6, F0 = 7;
+    ws.getCell(FILA_MES, C0 - 1).value = 'Mes →';
+    ws.getCell(FILA_MES, C0 - 1).font = { italic: true, size: 9, color: { argb: 'FF666666' } };
+    ws.getCell(FILA_MES, C0 - 1).alignment = { horizontal: 'right' };
+    let mesPrev = 0;
+    for (let k = 1; k <= N; k++) {
+      const mes = Math.floor((k - 1) * 7 / 30.44) + 1;
+      const c = ws.getCell(FILA_MES, C0 + k - 1);
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: mes % 2 ? 'FFDCE3EE' : 'FFF2F5F9' } };
+      if (mes !== mesPrev) { c.value = 'M' + mes; c.font = { bold: true, size: 9, color: { argb: CAB } }; mesPrev = mes; }
+    }
+    const heads = ['ID', 'Fase / Actividad', 'Sem. inicio', 'Sem. término', 'Duración (sem)', 'Fecha inicio', 'Fecha término', 'Ruta crítica'];
+    for (let k = 1; k <= N; k++) heads.push('S' + k);
+    const fh = ws.getRow(FILA_HEAD);
+    fh.values = heads; fh.height = 32;
+    heads.forEach((_, j) => {
+      const c = fh.getCell(j + 1);
+      c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: j + 1 >= C0 ? 9 : 10 };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: CAB } };
+      c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      c.border = bordes;
     });
-    const filaHeadIdx = filaHead.number;
 
-    // Filas de actividades
-    g.rows.forEach(r => {
-      const textoCols = r.filter((_, j) => !g.ganttCols.has(j));
-      const sinBarras = r.every((c, j) => !g.ganttCols.has(j) || !metEsCeldaBarra(c));
-      const esGrupo = esNegrita(r[0]) || (sinBarras && textoCols.filter(c => limpiar(c)).length === 1 && limpiar(r[0]));
-      const fila = ws.addRow(r.map((c, j) => g.ganttCols.has(j) ? '' : limpiar(c)));
-      for (let j = 0; j < ncols; j++) {
-        const cell = fila.getCell(j + 1);
+    // --- Filas de fases y actividades ---
+    let fila = F0, nFase = 0, nSueltas = 0;
+    const reglas = []; // { ref, formulas: [[expr, color]] }
+    const condBarra = (r) => `AND(ISNUMBER($C${r}),ISNUMBER($D${r}),COLUMN()-${C0 - 1}>=$C${r},COLUMN()-${C0 - 1}<=$D${r})`;
+    const ponerFechas = (r) => {
+      ws.getCell(`E${r}`).value = { formula: `IF(AND(ISNUMBER(C${r}),ISNUMBER(D${r})),D${r}-C${r}+1,"")` };
+      ws.getCell(`F${r}`).value = { formula: `IF(ISNUMBER(C${r}),$C$2+(C${r}-1)*7,"")` };
+      ws.getCell(`G${r}`).value = { formula: `IF(ISNUMBER(D${r}),$C$2+D${r}*7-1,"")` };
+      ws.getCell(`F${r}`).numFmt = FMT_FECHA; ws.getCell(`G${r}`).numFmt = FMT_FECHA;
+    };
+    const filaActividad = (a, id, color) => {
+      const r = fila++;
+      const row = ws.getRow(r);
+      row.getCell(1).value = id;
+      row.getCell(2).value = a.nombre;
+      row.getCell(3).value = a.inicio != null ? a.inicio : null;
+      row.getCell(4).value = a.fin != null ? a.fin : null;
+      row.getCell(8).value = 'No';
+      ponerFechas(r);
+      for (let c = 1; c <= ultCol; c++) row.getCell(c).border = bordes;
+      [3, 4, 8].forEach(c => {
+        const cell = row.getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: AMARILLO } };
+        cell.font = { bold: true, color: { argb: AZUL_TXT } };
+      });
+      row.getCell(2).alignment = { indent: 1, vertical: 'middle', wrapText: true };
+      for (let c = 1; c <= 8; c++) if (c !== 2) row.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
+      row.getCell(3).dataValidation = { type: 'whole', operator: 'between', allowBlank: true, formulae: [1, N], showErrorMessage: true, error: `Semana entre 1 y ${N}` };
+      row.getCell(4).dataValidation = { type: 'whole', operator: 'between', allowBlank: true, formulae: [`C${r}`, N], showErrorMessage: true, error: 'La semana de término debe ser ≥ a la de inicio' };
+      row.getCell(8).dataValidation = { type: 'list', allowBlank: true, formulae: ['"Sí,No"'] };
+      reglas.push({ ref: `${colL(C0)}${r}:${colL(ultCol)}${r}`, formulas: [
+        [`AND(${condBarra(r)},$H${r}="Sí")`, ROJO],
+        [condBarra(r), color],
+      ] });
+      return r;
+    };
+
+    items.forEach(it => {
+      if (it.tipo === 'act' || !it.hijos.length) {
+        // Actividad suelta (o fase sin actividades: se edita como actividad)
+        nSueltas++;
+        const pal = PALETA[nFase % PALETA.length];
+        filaActividad({ nombre: it.nombre, inicio: it.tipo === 'act' ? it.inicio : it.inicioPropio, fin: it.tipo === 'act' ? it.fin : it.finPropio }, String(nSueltas), pal[1]);
+        return;
+      }
+      const pal = PALETA[nFase % PALETA.length];
+      const idF = 'F' + nFase;
+      const rF = fila++;
+      const rowF = ws.getRow(rF);
+      rowF.getCell(1).value = idF;
+      rowF.getCell(2).value = /^(fase|etapa)\b/i.test(it.nombre) ? it.nombre : `Fase ${nFase} · ${it.nombre}`;
+      const desde = rF + 1, hasta = rF + it.hijos.length;
+      rowF.getCell(3).value = { formula: `IF(COUNT(C${desde}:C${hasta}),MIN(C${desde}:C${hasta}),"")` };
+      rowF.getCell(4).value = { formula: `IF(COUNT(D${desde}:D${hasta}),MAX(D${desde}:D${hasta}),"")` };
+      ponerFechas(rF);
+      for (let c = 1; c <= ultCol; c++) {
+        const cell = rowF.getCell(c);
         cell.border = bordes;
-        if (g.ganttCols.has(j)) {
+        if (c <= 2) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: pal[0] } };
+          cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        } else if (c < C0) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEEF1F5' } };
+          cell.font = { bold: true };
           cell.alignment = { horizontal: 'center', vertical: 'middle' };
-          if (metEsCeldaBarra(r[j])) {
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BARRA } };
-          } else if (esGrupo) {
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRUPO } };
-          }
-        } else {
-          cell.alignment = { vertical: 'middle', wrapText: true };
-          if (esGrupo) {
-            cell.font = { bold: true, color: { argb: VERDE } };
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRUPO } };
-          } else if (esNegrita(r[j])) {
-            cell.font = { bold: true };
-          }
         }
       }
+      reglas.push({ ref: `${colL(C0)}${rF}:${colL(ultCol)}${rF}`, formulas: [[condBarra(rF), pal[0]]] });
+      it.hijos.forEach((h, hi) => filaActividad(h, `${nFase}.${hi + 1}`, pal[1]));
+      nFase++;
+    });
+    const ultFila = fila - 1;
+
+    // Duración total y cumplimiento de plazo
+    ws.getCell('I2').value = 'Duración total (sem):';
+    ws.getCell('I2').font = { bold: true };
+    ws.getCell('I2').alignment = { horizontal: 'right' };
+    ws.mergeCells(2, C0, 2, C0 + 5);
+    const cDur = ws.getCell(2, C0 + 6);
+    cDur.value = { formula: `IF(COUNT(D${F0}:D${ultFila}),MAX(D${F0}:D${ultFila})-MIN(C${F0}:C${ultFila})+1,"")` };
+    cDur.font = { bold: true }; cDur.alignment = { horizontal: 'center' };
+    ws.mergeCells(2, C0 + 6, 2, C0 + 7);
+    const refDur = `${colL(C0 + 6)}2`;
+    const cCumple = ws.getCell(2, C0 + 8);
+    cCumple.value = { formula: `IF(${refDur}="","",IF(${refDur}<=$G$2,"✓ Cumple plazo","✗ Excede plazo"))` };
+    cCumple.font = { bold: true };
+    ws.mergeCells(2, C0 + 8, 2, Math.min(ultCol, C0 + 13));
+    ws.addConditionalFormatting({ ref: `${colL(C0 + 8)}2`, rules: [
+      { type: 'expression', priority: 1, formulae: [`${refDur}<=$G$2`], style: { font: { color: { argb: 'FF2E7D32' }, bold: true } } },
+      { type: 'expression', priority: 2, formulae: [`${refDur}>$G$2`], style: { font: { color: { argb: ROJO }, bold: true } } },
+    ] });
+    // Semanas fuera de plazo: encabezado en rojo suave
+    ws.addConditionalFormatting({ ref: `${colL(C0)}${FILA_HEAD}:${colL(ultCol)}${FILA_HEAD}`, rules: [
+      { type: 'expression', priority: 3, formulae: [`COLUMN()-${C0 - 1}>$G$2`], style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: 'FF8B2E2E' } } } },
+    ] });
+
+    // Barras (formato condicional por fila)
+    let prio = 10;
+    reglas.forEach(rg => {
+      ws.addConditionalFormatting({ ref: rg.ref, rules: rg.formulas.map(([f, color]) => ({
+        type: 'expression', priority: prio++, stopIfTrue: true, formulae: [f],
+        style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: color } } },
+      })) });
     });
 
-    // Anchos: columnas de período angostas; columnas de texto según contenido
-    for (let j = 0; j < ncols; j++) {
-      const col = ws.getColumn(j + 1);
-      if (g.ganttCols.has(j)) {
-        const hl = limpiar(header[j]).length;
-        col.width = Math.min(Math.max(5, hl + 2), 12);
-      } else {
-        const largos = [header[j], ...g.rows.map(r => r[j])].map(c => limpiar(c).length);
-        col.width = Math.min(Math.max(10, Math.max(...largos) + 2), j === 0 ? 55 : 30);
-      }
-    }
-
-    // Congelar encabezado y columnas de texto iniciales
-    let xSplit = 0;
-    while (xSplit < ncols && !g.ganttCols.has(xSplit)) xSplit++;
-    ws.views = [{ state: 'frozen', xSplit: xSplit < ncols ? xSplit : 0, ySplit: filaHeadIdx }];
-    ws.pageSetup.printTitlesRow = `${filaHeadIdx}:${filaHeadIdx}`;
+    // Anchos y vistas
+    ws.getColumn(1).width = 6;
+    ws.getColumn(2).width = Math.min(60, Math.max(34, ...items.flatMap(it => [it.nombre, ...(it.hijos || []).map(h => h.nombre)]).map(t => String(t).length + 6)));
+    [3, 4, 5].forEach(c => { ws.getColumn(c).width = 9; });
+    [6, 7].forEach(c => { ws.getColumn(c).width = 12; });
+    ws.getColumn(8).width = 9;
+    for (let c = C0; c <= ultCol; c++) ws.getColumn(c).width = 4.6;
+    ws.views = [{ state: 'frozen', xSplit: C0 - 1, ySplit: FILA_HEAD }];
+    ws.pageSetup.printTitlesRow = `${FILA_HEAD}:${FILA_HEAD}`;
   });
 
+  if (!wb.worksheets.length) throw new Error('No se pudieron leer las actividades de la Carta Gantt.');
   const buffer = await wb.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const safeNum = (numero || 'licitacion').replace(/[^\w\-]/g, '_');
