@@ -22677,11 +22677,7 @@ function metGanttAActividades(g) {
                : /\b(d|d[ií]a)\s*\d/i.test(etiquetas) ? 'D' : 'S';
   // Período (1..n) de cada columna Gantt: número de la etiqueta o su posición
   const nPer = gcols.map((j, k) => { const m = (hdr[j] || '').match(/(\d{1,3})/); return m ? parseInt(m[1], 10) : k + 1; });
-  const aSemanas = (a, b) => {
-    if (unidad === 'M') return [Math.floor((a - 1) * 52 / 12) + 1, Math.max(Math.floor((a - 1) * 52 / 12) + 1, Math.round(b * 52 / 12))];
-    if (unidad === 'D') return [Math.floor((a - 1) / 7) + 1, Math.ceil(b / 7)];
-    return [a, b];
-  };
+  const aSemanas = (a, b) => [a, b]; // se mantiene la unidad original; el Excel la pasa a semanas y a meses
   // Columnas de fase y de actividad
   const colFase = tcols.find(j => /fase|etapa/i.test(hdr[j] || ''));
   let colAct = tcols.find(j => /actividad|tarea|hito|descripci|partida|trabajo/i.test(hdr[j] || ''));
@@ -22711,6 +22707,7 @@ function metGanttAActividades(g) {
     const a = { tipo: 'act', nombre: act, inicio: rango[0], fin: rango[1] };
     if (faseActual) faseActual.hijos.push(a); else items.push(a);
   });
+  items.unidad = unidad;
   return items;
 }
 
@@ -22731,7 +22728,7 @@ async function descargarGanttMetodologiaExcel(secId) {
   if (lic && lic.fechaInicioEstimada) { const d = new Date(lic.fechaInicioEstimada + 'T00:00:00'); if (!isNaN(d)) fechaInicio = d; }
   if (!fechaInicio) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); fechaInicio = d; }
   const fechaXls = new Date(Date.UTC(fechaInicio.getFullYear(), fechaInicio.getMonth(), fechaInicio.getDate()));
-  const plazoLicSem = lic && Number(lic.plazoEjecucionDias) > 0 ? Math.ceil(Number(lic.plazoEjecucionDias) / 7) : null;
+  const plazoLicDias = lic && Number(lic.plazoEjecucionDias) > 0 ? Number(lic.plazoEjecucionDias) : null;
 
   // Paleta por fase: [barra de fase, barra de actividad, fondo fila fase]
   const PALETA = [
@@ -22750,10 +22747,35 @@ async function descargarGanttMetodologiaExcel(secId) {
   wb.calcProperties.fullCalcOnLoad = true;
   const usados = new Set();
 
+  // Pasa un rango de la unidad original (S, M o D) a semanas (S) o meses (M)
+  const convRango = (a, b, uOrig, U) => {
+    if (a == null || b == null || uOrig === U) return [a, b];
+    if (uOrig === 'S' && U === 'M') return [Math.floor((a - 1) * 12 / 52) + 1, Math.max(Math.floor((a - 1) * 12 / 52) + 1, Math.ceil(b * 12 / 52))];
+    if (uOrig === 'M' && U === 'S') return [Math.floor((a - 1) * 52 / 12) + 1, Math.max(Math.floor((a - 1) * 52 / 12) + 1, Math.round(b * 52 / 12))];
+    if (uOrig === 'D' && U === 'M') return [Math.floor((a - 1) / 30.44) + 1, Math.ceil(b / 30.44)];
+    if (uOrig === 'D' && U === 'S') return [Math.floor((a - 1) / 7) + 1, Math.ceil(b / 7)];
+    return [a, b];
+  };
+  const hojas = [];
   gantts.forEach((g, gi) => {
-    const items = metGanttAActividades(g);
-    if (!items.length) return;
-    let nombreHoja = gantts.length === 1 ? 'Carta Gantt' : (g.titulo || `Gantt ${gi + 1}`);
+    const base = metGanttAActividades(g);
+    if (!base.length) return;
+    ['S', 'M'].forEach(U => {
+      const items = JSON.parse(JSON.stringify(base));
+      items.forEach(it => {
+        [it.inicio, it.fin] = convRango(it.inicio, it.fin, base.unidad, U);
+        [it.inicioPropio, it.finPropio] = convRango(it.inicioPropio, it.finPropio, base.unidad, U);
+        (it.hijos || []).forEach(h => { [h.inicio, h.fin] = convRango(h.inicio, h.fin, base.unidad, U); });
+      });
+      hojas.push({ g, gi, U, items });
+    });
+  });
+  hojas.forEach(({ g, gi, U, items }) => {
+    const esMes = U === 'M';
+    const uCorta = esMes ? 'Mes' : 'Sem.';
+    const uLarga = esMes ? 'meses' : 'sem';
+    const plazoLic = plazoLicDias ? (esMes ? Math.round(plazoLicDias / 30.44) : Math.ceil(plazoLicDias / 7)) : null;
+    let nombreHoja = (gantts.length === 1 ? 'Carta Gantt' : (g.titulo || `Gantt ${gi + 1}`)).slice(0, 22) + (esMes ? ' - meses' : ' - semanas');
     nombreHoja = nombreHoja.replace(/[\\\/\?\*\[\]:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31) || `Gantt ${gi + 1}`;
     let base = nombreHoja, k2 = 2;
     while (usados.has(nombreHoja.toLowerCase())) nombreHoja = base.slice(0, 27) + ' (' + k2++ + ')';
@@ -22761,8 +22783,8 @@ async function descargarGanttMetodologiaExcel(secId) {
 
     // Semanas de la grilla: lo programado + holgura para poder alargar
     const finMax = Math.max(1, ...items.flatMap(it => it.tipo === 'fase' ? [it.finPropio || 0, ...it.hijos.map(h => h.fin || 0)] : [it.fin || 0]));
-    const plazo = plazoLicSem || finMax;
-    const N = Math.min(260, Math.max(finMax, plazo) + Math.max(2, Math.round(Math.max(finMax, plazo) * 0.25)));
+    const plazo = plazoLic || finMax;
+    const N = Math.min(260, Math.max(finMax, plazo) + Math.max(2, Math.round(Math.max(finMax, plazo) * (esMes ? 0.15 : 0.25))));
     const C0 = 9; // primera columna de la grilla (I)
     const ultCol = C0 + N - 1;
 
@@ -22788,32 +22810,32 @@ async function descargarGanttMetodologiaExcel(secId) {
     cFecha.font = { bold: true, color: { argb: AZUL_TXT } }; cFecha.alignment = { horizontal: 'center' };
     cFecha.note = 'Edita la fecha: todas las fechas de inicio y término se recalculan.';
     ws.mergeCells('C2:D2');
-    ws.getCell('E2').value = 'Plazo BBTT (sem):';
+    ws.getCell('E2').value = `Plazo BBTT (${uLarga}):`;
     ws.mergeCells('E2:F2');
     ws.getCell('E2').font = { bold: true }; ws.getCell('E2').alignment = { horizontal: 'right' };
     const cPlazo = ws.getCell('G2');
     cPlazo.value = plazo;
     cPlazo.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: AMARILLO } };
     cPlazo.font = { bold: true, color: { argb: AZUL_TXT } }; cPlazo.alignment = { horizontal: 'center' };
-    cPlazo.note = 'Plazo exigido por las bases, en semanas.';
+    cPlazo.note = `Plazo exigido por las bases, en ${esMes ? 'meses' : 'semanas'}.`;
 
-    ws.getCell('A3').value = 'Edite solo las celdas amarillas (semana de inicio, semana de término y ruta crítica). Las barras, fechas, duraciones y fases se recalculan solas. Rojo = ruta crítica.';
+    ws.getCell('A3').value = `Edite solo las celdas amarillas (${esMes ? 'mes' : 'semana'} de inicio, ${esMes ? 'mes' : 'semana'} de término y ruta crítica). Las barras, fechas, duraciones y fases se recalculan solas. Rojo = ruta crítica.`;
     ws.getCell('A3').font = { italic: true, size: 10, color: { argb: 'FF666666' } };
 
     // --- Filas 5 (meses) y 6 (encabezados) ---
     const FILA_MES = 5, FILA_HEAD = 6, F0 = 7;
-    ws.getCell(FILA_MES, C0 - 1).value = 'Mes →';
+    ws.getCell(FILA_MES, C0 - 1).value = esMes ? 'Año →' : 'Mes →';
     ws.getCell(FILA_MES, C0 - 1).font = { italic: true, size: 9, color: { argb: 'FF666666' } };
     ws.getCell(FILA_MES, C0 - 1).alignment = { horizontal: 'right' };
     let mesPrev = 0;
     for (let k = 1; k <= N; k++) {
-      const mes = Math.floor((k - 1) * 7 / 30.44) + 1;
+      const mes = esMes ? Math.floor((k - 1) / 12) + 1 : Math.floor((k - 1) * 7 / 30.44) + 1;
       const c = ws.getCell(FILA_MES, C0 + k - 1);
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: mes % 2 ? 'FFDCE3EE' : 'FFF2F5F9' } };
-      if (mes !== mesPrev) { c.value = 'M' + mes; c.font = { bold: true, size: 9, color: { argb: CAB } }; mesPrev = mes; }
+      if (mes !== mesPrev) { c.value = (esMes ? 'Año ' : 'M') + mes; c.font = { bold: true, size: 9, color: { argb: CAB } }; mesPrev = mes; }
     }
-    const heads = ['ID', 'Fase / Actividad', 'Sem. inicio', 'Sem. término', 'Duración (sem)', 'Fecha inicio', 'Fecha término', 'Ruta crítica'];
-    for (let k = 1; k <= N; k++) heads.push('S' + k);
+    const heads = ['ID', 'Fase / Actividad', `${uCorta} inicio`, `${uCorta} término`, `Duración (${uLarga})`, 'Fecha inicio', 'Fecha término', 'Ruta crítica'];
+    for (let k = 1; k <= N; k++) heads.push((esMes ? 'M' : 'S') + k);
     const fh = ws.getRow(FILA_HEAD);
     fh.values = heads; fh.height = 32;
     heads.forEach((_, j) => {
@@ -22830,8 +22852,8 @@ async function descargarGanttMetodologiaExcel(secId) {
     const condBarra = (r) => `AND(ISNUMBER($C${r}),ISNUMBER($D${r}),COLUMN()-${C0 - 1}>=$C${r},COLUMN()-${C0 - 1}<=$D${r})`;
     const ponerFechas = (r) => {
       ws.getCell(`E${r}`).value = { formula: `IF(AND(ISNUMBER(C${r}),ISNUMBER(D${r})),D${r}-C${r}+1,"")` };
-      ws.getCell(`F${r}`).value = { formula: `IF(ISNUMBER(C${r}),$C$2+(C${r}-1)*7,"")` };
-      ws.getCell(`G${r}`).value = { formula: `IF(ISNUMBER(D${r}),$C$2+D${r}*7-1,"")` };
+      ws.getCell(`F${r}`).value = { formula: esMes ? `IF(ISNUMBER(C${r}),EDATE($C$2,C${r}-1),"")` : `IF(ISNUMBER(C${r}),$C$2+(C${r}-1)*7,"")` };
+      ws.getCell(`G${r}`).value = { formula: esMes ? `IF(ISNUMBER(D${r}),EDATE($C$2,D${r})-1,"")` : `IF(ISNUMBER(D${r}),$C$2+D${r}*7-1,"")` };
       ws.getCell(`F${r}`).numFmt = FMT_FECHA; ws.getCell(`G${r}`).numFmt = FMT_FECHA;
     };
     const filaActividad = (a, id, color) => {
@@ -22851,7 +22873,7 @@ async function descargarGanttMetodologiaExcel(secId) {
       });
       row.getCell(2).alignment = { indent: 1, vertical: 'middle', wrapText: true };
       for (let c = 1; c <= 8; c++) if (c !== 2) row.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
-      row.getCell(3).dataValidation = { type: 'whole', operator: 'between', allowBlank: true, formulae: [1, N], showErrorMessage: true, error: `Semana entre 1 y ${N}` };
+      row.getCell(3).dataValidation = { type: 'whole', operator: 'between', allowBlank: true, formulae: [1, N], showErrorMessage: true, error: `${esMes ? 'Mes' : 'Semana'} entre 1 y ${N}` };
       row.getCell(4).dataValidation = { type: 'whole', operator: 'between', allowBlank: true, formulae: [`C${r}`, N], showErrorMessage: true, error: 'La semana de término debe ser ≥ a la de inicio' };
       row.getCell(8).dataValidation = { type: 'list', allowBlank: true, formulae: ['"Sí,No"'] };
       reglas.push({ ref: `${colL(C0)}${r}:${colL(ultCol)}${r}`, formulas: [
@@ -22898,7 +22920,7 @@ async function descargarGanttMetodologiaExcel(secId) {
     const ultFila = fila - 1;
 
     // Duración total y cumplimiento de plazo
-    ws.getCell('I2').value = 'Duración total (sem):';
+    ws.getCell('I2').value = `Duración total (${uLarga}):`;
     ws.getCell('I2').font = { bold: true };
     ws.getCell('I2').alignment = { horizontal: 'right' };
     ws.mergeCells(2, C0, 2, C0 + 5);
