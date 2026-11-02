@@ -11884,7 +11884,8 @@ $('apiModalSave').addEventListener('click', async () => {
 //   4) se avisa al modelo y al usuario qué entró completo, parcial o quedó fuera.
 const CTX_META = new WeakMap();          // bloque -> {docId, name, tag, ocr, nota, parcial}
 const CTX_LIMITE_PROVIDER = { google: 1048576, anthropic: 200000 };
-const CTX_MAX_BYTES_GEMINI = 18 * 1024 * 1024;   // Gemini rechaza peticiones inline > ~20 MB
+const CTX_MAX_BYTES_GEMINI = 12 * 1024 * 1024;   // Gemini rechaza peticiones inline > ~20 MB (y sin CORS → "Failed to fetch"); margen amplio
+const CTX_MAX_BYTES_CONTEO = 8 * 1024 * 1024;    // no subir a countTokens bloques más grandes que esto (se estima)
 const ctxBytes = b => b.type === 'text' ? (b.text || '').length : ((b.source && b.source.data) || '').length;
 const CTX_TOKENS_CACHE = new Map();      // conteos exactos (countTokens) por doc
 const CTX_PAGINAS_CACHE = new Map();     // texto por página de PDFs nativos (pdf.js)
@@ -11914,7 +11915,14 @@ function ctxPresupuestoTokens(modelKey, opts = {}) {
 
 function ctxEsErrorLimite(err) {
   const m = (err && err.message) || '';
-  return /input token count|exceeds the maximum number of tokens|prompt is too long|too many tokens|context length|maximum context/i.test(m);
+  return /input token count|exceeds the maximum number of tokens|prompt is too long|too many tokens|context length|maximum context|payload|too large|\b413\b/i.test(m)
+    || ctxEsErrorRed(err);
+}
+// "Failed to fetch" (Chrome) / "NetworkError" (Firefox) / "Load failed" (Safari): la
+// petición no obtuvo respuesta legible. Con documentos pesados suele ser el tamaño.
+function ctxEsErrorRed(err) {
+  const m = (err && err.message) || '';
+  return /failed to fetch|networkerror|load failed|network request failed/i.test(m);
 }
 
 function ctxBase64ABytes(b64) {
@@ -12155,7 +12163,7 @@ async function ajustarContextoPresupuesto(bloquesIn, opts = {}) {
   }
   let total = items.reduce((s, it) => s + it.tokens, 0);
   informe.totalOriginal = total;
-  const maxBytes = provider === 'google' ? CTX_MAX_BYTES_GEMINI : Infinity;
+  const maxBytes = provider === 'google' ? Math.floor(CTX_MAX_BYTES_GEMINI * (opts.factor || 1)) : Infinity;
   const bytesTotal = items.reduce((s, it) => s + ctxBytes(it.b), 0);
   const bytesOk = bytesTotal <= maxBytes;
   if (bytesOk && total <= presupuesto * 0.5) return { bloques: bloquesIn, informe };
@@ -12163,7 +12171,9 @@ async function ajustarContextoPresupuesto(bloquesIn, opts = {}) {
   // 2) Conteo exacto en Gemini para los bloques relevantes
   if (provider === 'google' && chatState.googleApiKey) {
     if (opts.onProgreso) opts.onProgreso('Midiendo el tamaño de los documentos…');
-    const grandes = items.filter(it => it.tokens > 2000);
+    // Solo se cuentan exacto los bloques medianos: subir un PDF de 30+ MB solo para
+    // contarlo falla igual que el envío real; para esos basta la estimación.
+    const grandes = items.filter(it => it.tokens > 2000 && ctxBytes(it.b) <= CTX_MAX_BYTES_CONTEO);
     for (let k = 0; k < grandes.length; k += 3) {
       await Promise.all(grandes.slice(k, k + 3).map(async it => {
         try { const n = await ctxContarExactoGemini(modelKey, it.b, it.meta); if (n) it.tokens = n; }
@@ -12259,6 +12269,7 @@ async function ajustarContextoPresupuesto(bloquesIn, opts = {}) {
     informe.parciales.push({ name: nombre(it), paginas: pags, incluidas: nPags, total: tot, unidad });
   }
   informe.totalFinal = usado;
+  informe.bytesFinal = bytesUsados;
 
   // 6) Nota para el modelo (va al inicio del contexto)
   const lineas = [];
@@ -28894,6 +28905,10 @@ async function generarAnalisis(analisisId) {
     const ctxAnalisis = ajCtx.bloques;
     const informeCtx = ajCtx.informe.ajustado ? ajCtx.informe : null;
     if (informeCtx) log(`[${def.id}] ` + ctxResumenInforme(informeCtx), 'info');
+    {
+      const mb = ctxAnalisis.reduce((acc, b) => acc + ctxBytes(b), 0) / 1048576;
+      console.log(`[${def.id}] envío a ${modelConfig.label}: ${mb.toFixed(1)} MB en ${ctxAnalisis.length} bloque(s)`);
+    }
 
     // ¿Hay documentos provenientes de OCR (escaneados) en el contexto?
     let hayOCRanalisis = false;
@@ -29306,11 +29321,13 @@ Ahora continúa el JSON desde ese punto exacto. Solo emite la continuación.`
       const sig = f > 0.6 ? 0.6 : (f > 0.35 ? 0.35 : null);
       if (sig) {
         ANALISIS_FACTOR_CTX[analisisId] = sig;
-        log(`[${def.id}] El modelo rechazó el tamaño del contexto. Reintentando con ${Math.round(sig * 100)}% del presupuesto…`, 'info');
+        log(`[${def.id}] ${ctxEsErrorRed(err) ? 'La petición no obtuvo respuesta (probablemente por tamaño)' : 'El modelo rechazó el tamaño del contexto'}. Reintentando con ${Math.round(sig * 100)}% del presupuesto…`, 'info');
         return generarAnalisis(analisisId);
       }
       delete ANALISIS_FACTOR_CTX[analisisId];
-      err = new Error('Los documentos superan el límite del modelo incluso después de recortarlos. Etiqueta las Bases Técnicas y deja fuera los tomos que no aporten a este análisis. (Detalle: ' + err.message + ')');
+      err = ctxEsErrorRed(err)
+        ? new Error('No se pudo completar la conexión con ' + modelConfig.label + ', incluso reduciendo el envío a ' + Math.round(0.35 * 100) + '%. Revisa tu conexión a internet y reintenta; si persiste, avísame. (Detalle: ' + err.message + ')')
+        : new Error('Los documentos superan el límite del modelo incluso después de recortarlos. Etiqueta las Bases Técnicas y deja fuera los tomos que no aporten a este análisis. (Detalle: ' + err.message + ')');
     }
     const esRateLimit = err.isRateLimit || /429|rate limit/i.test(err.message);
 
@@ -31660,7 +31677,8 @@ handleDocs = async function(files) {
     // ¿Ya existe un documento con el mismo nombre? Preguntar si se reemplaza y reprocesa.
     const existente = state.docs.find(d => (d.name || '').toLowerCase() === file.name.toLowerCase());
     if (existente) {
-      const ok = confirm(`"${file.name}" ya está cargado en esta licitación.\n\n¿Quieres reemplazarlo por este archivo y reprocesarlo?\n\nAceptar: reemplaza el archivo y lo vuelve a procesar (mantiene su etiqueta y categoría).\nCancelar: no se agrega.`);
+      const fUltRep = procFechaUltimo(existente);
+      const ok = confirm(`"${file.name}" ya está cargado en esta licitación${fUltRep ? ' (último procesamiento: ' + fUltRep + ')' : ''}.\n\n¿Quieres reemplazarlo por este archivo y reprocesarlo?\n\nAceptar: reemplaza el archivo y lo vuelve a procesar (mantiene su etiqueta y categoría).\nCancelar: no se agrega.`);
       if (!ok) { omitidos.push(file.name); continue; }
       if (file.size > TAMANO_MAX_MB * 1024 * 1024) {
         alert(`"${file.name}" excede ${TAMANO_MAX_MB} MB; no se puede reemplazar.`);
@@ -36694,6 +36712,15 @@ async function procesarTextoDocumento(doc, { forzar = false } = {}) {
   mostrarToast(msg + (DOC_PROC.cola.length ? ` Quedan ${DOC_PROC.cola.length} en cola.` : ''), { duracion: 6000 });
 }
 
+// Fecha/hora del último procesamiento de texto ("2 nov 2026, 11:40"), o '' si nunca
+function procFechaUltimo(doc) {
+  const f = doc && (doc.procAt || doc.ocrAt);
+  if (!f) return '';
+  const d = new Date(f);
+  if (isNaN(d)) return '';
+  return d.toLocaleString('es-CL', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
 // Pastilla de estado de procesamiento para cada documento
 function procPillHtml(doc) {
   if (!/\.pdf$/i.test(doc.name || '') || doc.skipped || doc.generadoDesdeMd) return '';
@@ -36703,10 +36730,12 @@ function procPillHtml(doc) {
   if (pos) return pill(`⏳ En cola (${pos})`, '#6B7280', 'title="Se procesa cuando terminen los documentos anteriores"');
   if (doc.procPausado) return pill(`⏸ OCR pausado${doc.ocrAvance ? ` (${doc.ocrAvance.hechas}/${doc.ocrAvance.total})` : ''}`, '#B45309', 'title="Retómalo desde el menú ⋯"');
   if (doc.procError) return pill('⚠ No se pudo procesar', '#DC2626', `title="${escapeHtml(doc.procError)}"`);
-  if (doc.textoTipo === 'digital') return pill('📄 Texto digital', '#059669', 'title="El PDF tiene texto seleccionable: no necesita OCR"');
-  if (doc.textoTipo === 'escaneado') return pill('🔍 Escaneado · OCR listo', '#059669');
-  if (doc.textoTipo === 'mixto') return pill(`🔍 Mixto · OCR en ${doc.ocrPaginasEscaneadas || '?'} págs`, '#059669', `title="${doc.ocrPaginasEscaneadas || '?'} de ${doc.procPaginas || '?'} páginas eran escaneadas"`);
-  if (doc.ocrTexto) return pill('🔍 OCR listo', '#059669');
+  const fUlt = procFechaUltimo(doc);
+  const sufFecha = fUlt ? ` · Procesado el ${fUlt}` : '';
+  if (doc.textoTipo === 'digital') return pill('📄 Texto digital', '#059669', `title="El PDF tiene texto seleccionable: no necesita OCR${sufFecha}"`);
+  if (doc.textoTipo === 'escaneado') return pill('🔍 Escaneado · OCR listo', '#059669', `title="OCR aplicado a ${doc.procPaginas || doc.ocrPaginas || '?'} páginas${sufFecha}"`);
+  if (doc.textoTipo === 'mixto') return pill(`🔍 Mixto · OCR en ${doc.ocrPaginasEscaneadas || '?'} págs`, '#059669', `title="${doc.ocrPaginasEscaneadas || '?'} de ${doc.procPaginas || '?'} páginas eran escaneadas${sufFecha}"`);
+  if (doc.ocrTexto) return pill('🔍 OCR listo', '#059669', fUlt ? `title="Procesado el ${fUlt}"` : '');
   return pill('⏳ Pendiente', '#6B7280', 'title="Se revisará automáticamente"');
 }
 
@@ -36734,7 +36763,9 @@ function procAbrirMenuDoc(btn) {
   const menu = document.createElement('div');
   menu.id = 'procMenuDoc';
   menu.style.cssText = 'position:absolute;z-index:10001;background:var(--surface,#fff);border:1px solid var(--border,#ddd);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);padding:4px;min-width:260px;';
-  menu.innerHTML = items.map(it => `<button data-acc="${it.acc}" ${ocupado ? 'disabled' : ''} style="display:block;width:100%;text-align:left;background:none;border:none;padding:8px 10px;border-radius:6px;cursor:${ocupado ? 'not-allowed' : 'pointer'};font-family:inherit;opacity:${ocupado ? '.5' : '1'};"><div style="font-size:12.5px;font-weight:600;">${it.txt}</div><div style="font-size:11px;color:var(--text-mute,#777);">${it.sub}</div></button>`).join('')
+  const fUltMenu = procFechaUltimo(doc);
+  const cabecera = `<div style="font-size:11px;color:var(--text-mute,#777);padding:6px 10px 4px;border-bottom:1px solid var(--border,#eee);margin-bottom:2px;">${fUltMenu ? 'Último procesamiento: <strong style="color:var(--text,#222);">' + fUltMenu + '</strong>' : 'Aún no se ha procesado'}</div>`;
+  menu.innerHTML = cabecera + items.map(it => `<button data-acc="${it.acc}" ${ocupado ? 'disabled' : ''} style="display:block;width:100%;text-align:left;background:none;border:none;padding:8px 10px;border-radius:6px;cursor:${ocupado ? 'not-allowed' : 'pointer'};font-family:inherit;opacity:${ocupado ? '.5' : '1'};"><div style="font-size:12.5px;font-weight:600;">${it.txt}</div><div style="font-size:11px;color:var(--text-mute,#777);">${it.sub}</div></button>`).join('')
     + (ocupado ? '<div style="font-size:11px;color:var(--text-mute,#777);padding:6px 10px;">Este documento ya está en proceso o en cola.</div>' : '');
   document.body.appendChild(menu);
   const r = btn.getBoundingClientRect();
@@ -36746,7 +36777,8 @@ function procAbrirMenuDoc(btn) {
     if (acc === 'retomar') {
       encolarProcesamientoDoc(doc, {});
     } else if (acc === 'reprocesar') {
-      if (!confirm(`¿Reprocesar "${doc.name}" desde cero?\n\nSe vuelve a leer el documento y se aplica OCR solo a las páginas escaneadas. El texto anterior se reemplaza.`)) return;
+      const fUltConf = procFechaUltimo(doc);
+      if (!confirm(`¿Reprocesar "${doc.name}" desde cero?\n\n${fUltConf ? 'Último procesamiento: ' + fUltConf + '\n' : ''}Se vuelve a leer el documento y se aplica OCR solo a las páginas escaneadas. El texto anterior se reemplaza.`)) return;
       encolarProcesamientoDoc(doc, { forzar: true });
     }
   }));
