@@ -16236,14 +16236,154 @@ function parsearHojaB01(sheet) {
   return partidas;
 }
 
+// === Lectura tolerante de la Tabla de partidas ===
+// Cuando la IA corta el JSON y se piden continuaciones, el texto pegado suele venir
+// roto: partidas repetidas, una partida a medias en el empalme, el JSON reabierto con
+// ```json o con otro {"fuente": ...}. En vez de descartar todo, se rescata cada
+// partida completa que aparezca en el texto y se eliminan los duplicados exactos.
+const TOPE_COSTO_CONTINUACION_USD = 2.0;     // no seguir pidiendo continuaciones sobre este gasto
+const TIMEOUT_CONTINUACION_MS = 5 * 60 * 1000; // cada continuación tiene máximo 5 minutos
+
+async function fetchConTimeout(url, opts, ms) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  try { return await fetch(url, { ...opts, signal: ctrl.signal }); }
+  finally { clearTimeout(id); }
+}
+
+// Instrucción de continuación para la Tabla de partidas: en vez de pedir "sigue desde
+// estos caracteres exactos" (empalme frágil), se le dice qué partidas ya emitió y que
+// siga con las siguientes. El empalme da igual porque al final se rescatan los objetos.
+function promptContinuacionPartidas(respuesta) {
+  const ps = rescatarPartidasDeTexto(respuesta);
+  if (!ps.length) return null;
+  const ult = ps.slice(-3).map(p => `- ${p.codigo || '(sin código)'} | ${p.descripcion} | camino: ${p.camino || '-'}`).join('\n');
+  return `Estabas extrayendo la lista de partidas y la respuesta se cortó por límite de tokens. Ya emitiste ${ps.length} partidas completas. Las últimas fueron:
+${ult}
+
+Continúa con las partidas SIGUIENTES a esas, en el mismo orden del documento. NO repitas ninguna ya emitida, NO vuelvas a escribir "fuente" ni abras un JSON nuevo, sin saludar ni explicar. Emite solo objetos de partida con la misma estructura, separados por comas.
+Si ya no quedan partidas por extraer, responde exactamente: FIN`;
+}
+
+function esPartidaValidaRescate(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return false;
+  if ('partidas' in o) return false;
+  if (typeof o.descripcion !== 'string' || !o.descripcion.trim()) return false;
+  return ('cantidad' in o) || ('unidad' in o);
+}
+
+function normalizarPartidaRescate(o) {
+  const p = { ...o };
+  p.codigo = p.codigo == null ? '' : String(p.codigo);
+  p.descripcion = String(p.descripcion).trim();
+  if (p.unidad != null) p.unidad = String(p.unidad);
+  if (typeof p.cantidad === 'string') {
+    const n = parseFloat(p.cantidad.replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.'));
+    p.cantidad = isFinite(n) ? n : null;
+  }
+  return p;
+}
+
+// Recorre el texto y devuelve todas las partidas (objetos planos) que parsean bien.
+function rescatarPartidasDeTexto(texto) {
+  const t = String(texto || '').replace(/```(?:json)?/gi, '');
+  const out = [];
+  let i = t.indexOf('{');
+  while (i !== -1) {
+    let inStr = false, esc = false, fin = -1;
+    for (let j = i + 1; j < t.length; j++) {
+      const ch = t[j];
+      if (esc) { esc = false; continue; }
+      if (inStr) {
+        if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') break;   // objeto anidado o reapertura
+      if (ch === '}') { fin = j; break; }
+    }
+    if (fin !== -1) {
+      const cand = t.slice(i, fin + 1);
+      let obj = null;
+      try { obj = JSON.parse(cand); } catch (_) {
+        try { obj = JSON.parse(cand.replace(/,(\s*})/g, '$1')); } catch (_) {}
+      }
+      if (esPartidaValidaRescate(obj)) {
+        out.push(normalizarPartidaRescate(obj));
+        i = t.indexOf('{', fin + 1);
+      } else {
+        i = t.indexOf('{', i + 1);
+      }
+      continue;
+    }
+    // Objeto anidado/reapertura, o una partida cortada a mitad de un string que
+    // desalinea las comillas: reintentar desde la siguiente '{' (no saltar a ciegas).
+    i = t.indexOf('{', i + 1);
+  }
+  return out;
+}
+
+function deduplicarPartidas(partidas) {
+  const vistas = new Set();
+  const unicas = [];
+  let duplicadas = 0;
+  const norm = v => String(v == null ? '' : v).trim().toLowerCase().replace(/\s+/g, ' ');
+  for (const p of partidas) {
+    const k = [p.codigo, p.descripcion, p.camino, p.seccion, p.unidad, p.cantidad].map(norm).join('|');
+    if (vistas.has(k)) { duplicadas++; continue; }
+    vistas.add(k);
+    unicas.push(p);
+  }
+  return { unicas, duplicadas };
+}
+
+// Devuelve { data: {fuente, partidas, ...}, rescate: null | {recuperadas, duplicadas} }
+// o null si no hay ninguna partida rescatable.
+function leerPartidasJson(texto) {
+  const t = String(texto || '').trim();
+  try {
+    const d = JSON.parse(t);
+    if (d && Array.isArray(d.partidas)) return { data: d, rescate: d.rescate || null };
+  } catch (_) {}
+  const d2 = parsearJsonEstandarMinero(t);
+  if (d2 && Array.isArray(d2.partidas) && d2.partidas.length) return { data: d2, rescate: d2.rescate || null };
+
+  const encontradas = rescatarPartidasDeTexto(t);
+  if (!encontradas.length) return null;
+  const { unicas, duplicadas } = deduplicarPartidas(encontradas);
+  const mF = t.match(/"fuente"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  let fuente = 'IA';
+  if (mF) { try { fuente = JSON.parse('"' + mF[1] + '"'); } catch (_) { fuente = mF[1]; } }
+  const rescate = { recuperadas: unicas.length, duplicadas };
+  return { data: { fuente, partidas: unicas, rescate }, rescate };
+}
+
+function bannerRescatePartidas(r) {
+  if (!r) return '';
+  const motivos = {
+    'tope-costo': ` Se detuvieron las continuaciones al llegar al tope de gasto (US$${TOPE_COSTO_CONTINUACION_USD.toFixed(2)}).`,
+    'timeout': ' Una continuación no respondió a tiempo y se detuvo.',
+    'max-intentos': ' Se agotaron los intentos de continuación.',
+    'error': ' Una continuación falló y se detuvo.',
+  };
+  const dup = r.duplicadas ? ` Se descartaron ${r.duplicadas} partida(s) repetida(s) en los empalmes.` : '';
+  return `
+    <div class="analysis-intro" style="padding:12px 16px;margin-bottom:14px;background:#FEF3C7;border:1px solid #FCD34D;border-radius:8px;color:#92400E;font-size:13px;line-height:1.5;">
+      <strong>⚠ Respuesta reparada.</strong> La IA entregó el resultado cortado; se recuperaron <strong>${r.recuperadas}</strong> partidas completas.${dup}${motivos[r.motivo] || ''}
+      Puede faltar alguna partida al final o en un empalme: compara el total con el presupuesto oficial antes de usarla.
+    </div>`;
+}
+
 // === Render del análisis Partidas ===
 function renderPartidas(rawContenido, analisisId) {
   // rawContenido puede ser:
   //  - JSON con {fuente, partidas: [...]}  (vino de parseo local o IA)
-  let data;
-  try {
-    data = JSON.parse(rawContenido);
-  } catch(e) {
+  //  - texto JSON roto por continuaciones mal empalmadas → se rescata lo completo
+  const leido = leerPartidasJson(rawContenido);
+  const data = leido ? leido.data : null;
+  const rescateInfo = leido ? leido.rescate : null;
+  if (!data) {
     return `
       <div class="analysis-intro" style="padding:16px;background:#FEF3C7;border:1px solid #FCD34D;border-radius:8px;color:#92400E;">
         <strong>⚠ No se pudo parsear el resultado.</strong>
@@ -16518,7 +16658,7 @@ function renderPartidas(rawContenido, analisisId) {
 
   // Wire eventos después de render
   setTimeout(() => wireEventosPartidas(analisisId, partidas), 50);
-  return html;
+  return bannerRescatePartidas(rescateInfo) + html;
 }
 
 function construirTablaPivote(partidas, pivote) {
@@ -17464,7 +17604,7 @@ function exportarPartidasExcel(partidas) {
 // Render HTML simple (para descarga Word) de partidas
 function renderPartidasWordHtml(rawContenido) {
   let data;
-  try { data = JSON.parse(rawContenido); } catch(e) { return `<pre>${escapeHtmlEM(rawContenido)}</pre>`; }
+  { const l = leerPartidasJson(rawContenido); if (!l) return `<pre>${escapeHtmlEM(rawContenido)}</pre>`; data = l.data; }
   const partidasRaw = data.partidas || [];
   if (partidasRaw.length === 0) return `<p>No hay partidas detectadas.</p>`;
   // Re-categorizar con la taxonomía actual (no la guardada)
@@ -17941,7 +18081,9 @@ function renderCosteoDirecto(rawContenido_unused, analisisId) {
 
   let partidasRaw;
   try {
-    partidasRaw = JSON.parse(ultimaPart.contenido).partidas || [];
+    const l = leerPartidasJson(ultimaPart.contenido);
+    if (!l) throw new Error('partidas ilegibles');
+    partidasRaw = l.data.partidas || [];
   } catch(e) {
     return `<div class="analysis-intro" style="padding:16px;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:8px;color:#991B1B;"><strong>Error:</strong> no se pudo leer el análisis de partidas. Regenéralo.</div>`;
   }
@@ -28941,6 +29083,7 @@ Reglas:
 - Para datos numéricos (montos, plazos, %) cita exactamente lo que dice el documento${bloqueOCRanalisis}`;
 
     let respuesta, tokensIn = 0, tokensOut = 0;
+    let corteContinuacion = null; // 'tope-costo' | 'timeout' | 'error' | 'max-intentos'
 
     if (provider === 'anthropic') {
       // Una sola consulta sin historial previo
@@ -28999,9 +29142,16 @@ Reglas:
       if (def.customRender && stopReason === 'max_tokens') {
         let intentos = 0;
         const maxIntentos = 10;
+        const esPartidasA = def.customRender === 'partidas';
+        const costoAcumA = () => (tokensIn / 1e6) * modelConfig.priceInput + (tokensOut / 1e6) * modelConfig.priceOutput;
         while (stopReason === 'max_tokens' && intentos < maxIntentos) {
+          if (costoAcumA() >= TOPE_COSTO_CONTINUACION_USD) {
+            console.warn(`[${def.id}/anthropic] tope de gasto alcanzado (US$${costoAcumA().toFixed(2)})`);
+            corteContinuacion = 'tope-costo';
+            break;
+          }
           intentos++;
-          console.log(`[estandar-minero/anthropic] JSON truncado, continuación ${intentos}/${maxIntentos}`);
+          console.log(`[${def.id}/anthropic] JSON truncado, continuación ${intentos}/${maxIntentos}`);
           const paneCont = document.querySelector(`.tab-pane[data-tab-pane="${analisisId}"]`);
           if (paneCont) {
             const empty = paneCont.querySelector('.analysis-empty');
@@ -29011,34 +29161,44 @@ Reglas:
             }
           }
           const tail = respuesta.slice(-800);
-          const respCont = await fetch(CLAUDE_API_URL, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': chatState.apiKey,
-              'anthropic-version': '2023-06-01',
-              'anthropic-dangerous-direct-browser-access': 'true',
-            },
-            body: JSON.stringify({
-              model: modelConfig.apiModel,
-              max_tokens: maxTokensAnthropic,
-              system: systemPrompt,
-              messages: [
-                {role: 'user', content: contentBlocks},
-                {role: 'assistant', content: respuesta},
-                {role: 'user', content: `La respuesta se cortó por límite de tokens. Continúa EXACTAMENTE el JSON desde donde te quedaste, sin repetir nada, sin saludar, sin explicar. Solo emite la continuación.\n\nÚltimos caracteres tuyos:\n"""\n${tail}\n"""\n\nContinúa el JSON desde ese punto exacto.`}
-              ],
-            }),
-          });
-          if (!respCont.ok) { console.warn('[anthropic] continuación falló'); break; }
+          const instrPartidas = esPartidasA ? promptContinuacionPartidas(respuesta) : null;
+          let respCont;
+          try {
+            respCont = await fetchConTimeout(CLAUDE_API_URL, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': chatState.apiKey,
+                'anthropic-version': '2023-06-01',
+                'anthropic-dangerous-direct-browser-access': 'true',
+              },
+              body: JSON.stringify({
+                model: modelConfig.apiModel,
+                max_tokens: maxTokensAnthropic,
+                system: systemPrompt,
+                messages: [
+                  {role: 'user', content: contentBlocks},
+                  {role: 'assistant', content: respuesta.replace(/\s+$/, '')},
+                  {role: 'user', content: instrPartidas || `La respuesta se cortó por límite de tokens. Continúa EXACTAMENTE el JSON desde donde te quedaste, sin repetir nada, sin saludar, sin explicar. Solo emite la continuación.\n\nÚltimos caracteres tuyos:\n"""\n${tail}\n"""\n\nContinúa el JSON desde ese punto exacto.`}
+                ],
+              }),
+            }, TIMEOUT_CONTINUACION_MS);
+          } catch (eCont) {
+            console.warn(`[${def.id}/anthropic] continuación sin respuesta (${eCont.name})`);
+            corteContinuacion = eCont.name === 'AbortError' ? 'timeout' : 'error';
+            break;
+          }
+          if (!respCont.ok) { console.warn('[anthropic] continuación falló'); corteContinuacion = 'error'; break; }
           const dataCont = await respCont.json();
           const trozo = dataCont.content?.filter(c => c.type === 'text').map(c => c.text).join('\n') || '';
-          if (!trozo) break;
-          respuesta += trozo;
           tokensIn += dataCont.usage?.input_tokens || 0;
           tokensOut += dataCont.usage?.output_tokens || 0;
+          if (esPartidasA && /^\s*FIN\s*$/i.test(trozo)) { stopReason = 'end_turn'; break; }
+          if (!trozo) break;
+          respuesta += esPartidasA && instrPartidas ? ',\n' + trozo : trozo;
           stopReason = dataCont.stop_reason;
         }
+        if (stopReason === 'max_tokens' && !corteContinuacion) corteContinuacion = 'max-intentos';
       }
 
       // Auto-continuación para análisis MARKDOWN truncado (no customRender)
@@ -29081,6 +29241,8 @@ Reglas:
 
       if (stopReason === 'max_tokens' && !def.customRender) {
         respuesta += `\n\n> ⚠️ **Respuesta truncada por límite de tokens.** El análisis no alcanzó a completarse. Considera regenerar con Gemini Pro (mayor capacidad) o reformular el prompt para reducir alcance.`;
+      } else if (def.customRender === 'partidas') {
+        // se normaliza más abajo (común a ambos proveedores)
       } else if (stopReason === 'max_tokens' && def.customRender) {
         console.warn('[estandar-minero/anthropic] JSON sigue truncado tras reintentos. Intentando cerrar manualmente.');
         respuesta = cerrarJsonTruncado(respuesta);
@@ -29111,6 +29273,11 @@ Reglas:
         // Gemini 2.5 (Flash y Pro) tienen "thinking" activado por defecto y se come
         // gran parte del presupuesto. Limitamos para reservar tokens a la respuesta visible.
         const apiModel = (modelConfig.apiModel || '').toLowerCase();
+        // Tabla de partidas: la salida es enorme. Gemini Pro admite hasta 65.536 tokens de
+        // salida; usarlos reduce las continuaciones (y cada continuación reenvía todo el contexto).
+        if (def.customRender === 'partidas' && apiModel.includes('pro')) {
+          genCfg.maxOutputTokens = 65536;
+        }
         if (apiModel.includes('2.5') || apiModel.includes('gemini-2.5')) {
           if (apiModel.includes('pro')) {
             genCfg.thinkingConfig = { thinkingBudget: 8192 };
@@ -29166,9 +29333,16 @@ Reglas:
       if (def.customRender && finishReason === 'MAX_TOKENS') {
         let intentos = 0;
         const maxIntentos = 10;
+        const esPartidas = def.customRender === 'partidas';
+        const costoAcum = () => (tokensIn / 1e6) * modelConfig.priceInput + (tokensOut / 1e6) * modelConfig.priceOutput;
         while (finishReason === 'MAX_TOKENS' && intentos < maxIntentos) {
+          if (costoAcum() >= TOPE_COSTO_CONTINUACION_USD) {
+            console.warn(`[${def.id}] tope de gasto alcanzado (US$${costoAcum().toFixed(2)}), se detienen las continuaciones`);
+            corteContinuacion = 'tope-costo';
+            break;
+          }
           intentos++;
-          console.log(`[estandar-minero] JSON truncado, continuación ${intentos}/${maxIntentos}`);
+          console.log(`[${def.id}] JSON truncado, continuación ${intentos}/${maxIntentos}`);
           // Mostramos feedback en el pane
           const paneCont = document.querySelector(`.tab-pane[data-tab-pane="${analisisId}"]`);
           if (paneCont) {
@@ -29176,16 +29350,18 @@ Reglas:
             paneCont.querySelector('.analysis-empty p')?.remove();
             const empty = paneCont.querySelector('.analysis-empty');
             if (empty) {
-              empty.insertAdjacentHTML('beforeend', `<h3>Continuando JSON... (${intentos}/${maxIntentos})</h3><p>El modelo cortó la respuesta. Pidiendo continuación para completar el JSON.</p>`);
+              const llevamos = esPartidas ? ` Llevamos ${deduplicarPartidas(rescatarPartidasDeTexto(respuesta)).unicas.length} partidas.` : '';
+              empty.insertAdjacentHTML('beforeend', `<h3>Continuando JSON... (${intentos}/${maxIntentos})</h3><p>El modelo cortó la respuesta. Pidiendo continuación.${llevamos} Gasto de este análisis: US$${costoAcum().toFixed(2)} (tope US$${TOPE_COSTO_CONTINUACION_USD.toFixed(2)}).</p>`);
             }
           }
 
           // Tomamos los últimos 800 chars como contexto y pedimos continuación
           const tail = respuesta.slice(-800);
+          const instrPartidasG = esPartidas ? promptContinuacionPartidas(respuesta) : null;
           const continuationParts = [...parts];
           // Reemplazamos el último 'text' (el prompt original) por la instrucción de continuar
           continuationParts[continuationParts.length - 1] = {
-            text: `Estabas generando un JSON pero la respuesta se cortó por límite de tokens. Continúa EXACTAMENTE desde donde te quedaste, sin repetir nada de lo anterior, sin saludar, sin explicar. Solo emite la continuación del JSON.
+            text: instrPartidasG || `Estabas generando un JSON pero la respuesta se cortó por límite de tokens. Continúa EXACTAMENTE desde donde te quedaste, sin repetir nada de lo anterior, sin saludar, sin explicar. Solo emite la continuación del JSON.
 
 Últimos caracteres de tu respuesta anterior (para que sepas dónde retomar):
 """
@@ -29195,32 +29371,42 @@ ${tail}
 Ahora continúa el JSON desde ese punto exacto. Solo emite la continuación.`
           };
 
-          const respCont = await fetch(url, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-              contents: [{role: 'user', parts: continuationParts}],
-              systemInstruction: {parts: [{text: systemPrompt}]},
-              generationConfig: {...genCfg, responseMimeType: undefined}, // sin forzar JSON para continuación (puede ser solo fragmento)
-            }),
-          });
+          let respCont;
+          try {
+            respCont = await fetchConTimeout(url, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                contents: [{role: 'user', parts: continuationParts}],
+                systemInstruction: {parts: [{text: systemPrompt}]},
+                generationConfig: {...genCfg, responseMimeType: undefined}, // sin forzar JSON para continuación (puede ser solo fragmento)
+              }),
+            }, TIMEOUT_CONTINUACION_MS);
+          } catch (eCont) {
+            console.warn(`[${def.id}] continuación sin respuesta (${eCont.name}), se conserva lo obtenido`);
+            corteContinuacion = eCont.name === 'AbortError' ? 'timeout' : 'error';
+            break;
+          }
 
           if (!respCont.ok) {
-            console.warn('[estandar-minero] continuación falló, abortando');
+            console.warn(`[${def.id}] continuación falló, abortando`);
+            corteContinuacion = 'error';
             break;
           }
           const dataCont = await respCont.json();
           const trozo = dataCont.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('\n') || '';
-          if (!trozo) {
-            console.warn('[estandar-minero] continuación vacía, abortando');
-            break;
-          }
-          respuesta += trozo;
           const usageCont = dataCont.usageMetadata || {};
           tokensIn += usageCont.promptTokenCount || 0;
           tokensOut += usageCont.candidatesTokenCount || 0;
+          if (esPartidas && /^\s*FIN\s*$/i.test(trozo)) { finishReason = 'STOP'; break; }
+          if (!trozo) {
+            console.warn(`[${def.id}] continuación vacía, abortando`);
+            break;
+          }
+          respuesta += instrPartidasG ? ',\n' + trozo : trozo;
           finishReason = dataCont.candidates?.[0]?.finishReason;
         }
+        if (finishReason === 'MAX_TOKENS' && !corteContinuacion) corteContinuacion = 'max-intentos';
       }
 
       // Auto-continuación para análisis MARKDOWN truncado (no customRender)
@@ -29262,11 +29448,33 @@ Ahora continúa el JSON desde ese punto exacto. Solo emite la continuación.`
 
       if (finishReason === 'MAX_TOKENS' && !def.customRender) {
         respuesta += `\n\n> ⚠️ **Respuesta truncada por límite de tokens.** El análisis no alcanzó a completarse. Considera regenerar con Gemini Pro (mayor capacidad) o usar un análisis más focalizado.`;
+      } else if (def.customRender === 'partidas') {
+        // se normaliza más abajo (común a ambos proveedores)
       } else if (finishReason === 'MAX_TOKENS' && def.customRender) {
         // Si tras los reintentos sigue truncado, intentamos cerrar el JSON manualmente
         console.warn('[estandar-minero] JSON sigue truncado tras reintentos. Intentando cerrar manualmente.');
         respuesta = cerrarJsonTruncado(respuesta);
       }
+    }
+
+    // Tabla de partidas: guardar siempre JSON limpio. Si la respuesta venía cortada o mal
+    // empalmada, se guardan las partidas rescatadas (sin duplicados) y se marca el rescate,
+    // para que Costeo Directo, APU y el render lean un JSON válido.
+    if (def.customRender === 'partidas') {
+      let limpio = null;
+      try { const d = JSON.parse(String(respuesta).trim()); if (d && Array.isArray(d.partidas)) limpio = d; } catch (_) {}
+      if (!limpio || corteContinuacion) {
+        const leido = leerPartidasJson(respuesta);
+        if (leido) {
+          const r = leido.rescate || (corteContinuacion ? { recuperadas: leido.data.partidas.length, duplicadas: 0 } : null);
+          if (r && corteContinuacion) r.motivo = corteContinuacion;
+          limpio = { ...leido.data };
+          if (r) limpio.rescate = r;
+          else delete limpio.rescate;
+          console.log(`[${def.id}] partidas normalizadas: ${limpio.partidas.length}` + (r ? ` (rescate: ${r.duplicadas} duplicadas descartadas${r.motivo ? ', corte por ' + r.motivo : ''})` : ''));
+        }
+      }
+      if (limpio) respuesta = JSON.stringify(limpio);
     }
 
     // Calcular costo
