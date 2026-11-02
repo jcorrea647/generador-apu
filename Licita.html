@@ -11800,6 +11800,8 @@ async function inicializarChat() {
 }
 
 async function guardarModeloActual() {
+  // El contexto se ajusta al límite de cada modelo: si cambió, reconstruirlo
+  if (chatState._ctxModeloPreparado && chatState._ctxModeloPreparado !== chatState.currentModel) chatState.contextDirty = true;
   await dbPut({id: '__currentmodel__', value: chatState.currentModel});
 }
 
@@ -11876,13 +11878,450 @@ $('apiModalSave').addEventListener('click', async () => {
   }
 });
 
+// =====================================================================
+// PRESUPUESTO DE CONTEXTO — evita "input token count exceeds the maximum"
+// =====================================================================
+// Antes de llamar a la IA se mide el contexto (estimación local y, en Gemini,
+// conteo exacto vía countTokens). Si no cabe en el límite del modelo:
+//   1) entran completos los documentos por prioridad (respuestas/aclaraciones →
+//      Bases Técnicas → etiquetados → sin etiqueta),
+//   2) los que no caben completos se trocean por página y se incluyen solo los
+//      fragmentos más relevantes a la consulta (BM25 local, sin costo),
+//   3) se descartan páginas OCR ilegibles (planos, timbres, ruido),
+//   4) se avisa al modelo y al usuario qué entró completo, parcial o quedó fuera.
+const CTX_META = new WeakMap();          // bloque -> {docId, name, tag, ocr, nota, parcial}
+const CTX_LIMITE_PROVIDER = { google: 1048576, anthropic: 200000 };
+const CTX_MAX_BYTES_GEMINI = 18 * 1024 * 1024;   // Gemini rechaza peticiones inline > ~20 MB
+const ctxBytes = b => b.type === 'text' ? (b.text || '').length : ((b.source && b.source.data) || '').length;
+const CTX_TOKENS_CACHE = new Map();      // conteos exactos (countTokens) por doc
+const CTX_PAGINAS_CACHE = new Map();     // texto por página de PDFs nativos (pdf.js)
+const CTX_NPAGS_CACHE = new Map();       // nº de páginas de PDFs nativos
+const CTX_CONSULTA_GENERICA = 'alcance obra partidas especificaciones tecnicas plazo presupuesto requisitos exigencias materiales equipos maquinaria personal garantias multas';
+const CTX_STOPWORDS = new Set('de la el los las un una unos unas y o u e en con por para del al se su sus que es son como lo le les mas pero sin sobre entre cada este esta estos estas ese esa eso cual cuales si no ya muy tambien solo ser debe deben usa formato markdown seccion ejemplo maximo minimo lineas parrafos datos concretos informacion documento documentos'.split(' '));
+
+function ctxMarcar(bloque, meta) {
+  if (bloque && typeof bloque === 'object') CTX_META.set(bloque, meta);
+  return bloque;
+}
+
+function ctxPresupuestoTokens(modelKey, opts = {}) {
+  const cfg = MODELS[modelKey] || MODELS[chatState.currentModel];
+  const limite = cfg.contextWindow || CTX_LIMITE_PROVIDER[cfg.provider] || 200000;
+  const reservaPrompts = Math.ceil(((opts.systemPrompt || '').length + (opts.userPrompt || '').length) / 3) + 12000;
+  let disponible;
+  if (cfg.provider === 'anthropic') {
+    // En Claude la ventana incluye la salida
+    disponible = limite - (opts.maxSalida || cfg.maxTokens || 16384) - reservaPrompts;
+  } else {
+    // En Gemini el límite es solo de entrada; dejamos 10% de holgura
+    disponible = Math.floor(limite * 0.90) - reservaPrompts;
+  }
+  return Math.max(20000, Math.floor(disponible * (opts.factor || 1)));
+}
+
+function ctxEsErrorLimite(err) {
+  const m = (err && err.message) || '';
+  return /input token count|exceeds the maximum number of tokens|prompt is too long|too many tokens|context length|maximum context/i.test(m);
+}
+
+function ctxBase64ABytes(b64) {
+  const bin = atob(b64);
+  const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u;
+}
+
+function ctxClaveBloque(b, meta) {
+  const len = b.type === 'text' ? (b.text || '').length : ((b.source && b.source.data) || '').length;
+  const id = meta && meta.docId ? meta.docId : ('anon:' + (b.type === 'text' ? (b.text || '').slice(0, 80) : ''));
+  return b.type + '|' + id + '|' + len;
+}
+
+async function ctxNumPaginasPdf(b, meta) {
+  const k = ctxClaveBloque(b, meta);
+  if (CTX_NPAGS_CACHE.has(k)) return CTX_NPAGS_CACHE.get(k);
+  let n;
+  try {
+    if (typeof pdfjsLib === 'undefined') throw new Error('sin pdf.js');
+    const pdf = await pdfjsLib.getDocument({ data: ctxBase64ABytes(b.source.data) }).promise;
+    n = pdf.numPages;
+    try { pdf.destroy(); } catch (_) {}
+  } catch (_) {
+    n = Math.max(1, Math.ceil(b.source.data.length * 0.75 / 60000)); // ~60 KB/página
+  }
+  CTX_NPAGS_CACHE.set(k, n);
+  return n;
+}
+
+// Estimación local (sin red). Conservadora a propósito.
+async function ctxEstimarRapido(b, meta, provider) {
+  if (b.type === 'text') return Math.ceil((b.text || '').length / 3.2);
+  if (b.type === 'document') {
+    const pags = await ctxNumPaginasPdf(b, meta);
+    return pags * (provider === 'google' ? 600 : 2200);
+  }
+  if (b.type === 'image') return provider === 'google' ? 300 : 1600;
+  return 0;
+}
+
+function ctxBloqueAParteGemini(b) {
+  if (b.type === 'text') return { text: b.text };
+  if ((b.type === 'document' || b.type === 'image') && b.source && b.source.data) {
+    return { inlineData: { mimeType: b.source.media_type || (b.type === 'document' ? 'application/pdf' : 'image/png'), data: b.source.data } };
+  }
+  return null;
+}
+
+// Conteo exacto con el endpoint countTokens de Gemini (gratuito). Cacheado por doc.
+async function ctxContarExactoGemini(modelKey, b, meta) {
+  const cfg = MODELS[modelKey];
+  const k = cfg.apiModel + '|' + ctxClaveBloque(b, meta);
+  if (CTX_TOKENS_CACHE.has(k)) return CTX_TOKENS_CACHE.get(k);
+  const parte = ctxBloqueAParteGemini(b);
+  if (!parte) return null;
+  const url = `${GEMINI_API_BASE}/${cfg.apiModel}:countTokens?key=${chatState.googleApiKey}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ role: 'user', parts: [parte] }] }),
+  });
+  if (!r.ok) throw new Error('countTokens ' + r.status);
+  const d = await r.json();
+  const n = d.totalTokens || d.total_tokens;
+  if (typeof n !== 'number') return null;
+  CTX_TOKENS_CACHE.set(k, n);
+  return n;
+}
+
+function ctxPrioridad(meta) {
+  if (!meta || meta.nota) return 0;                 // instrucciones, encabezados, propuesta: siempre
+  const s = ((meta.tag || '') + ' ' + (meta.name || '')).toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');
+  if (/respuesta|consulta|aclarac|aclaratori|circular|adenda|addenda|enmienda/.test(s)) return 1;
+  if (/bases?\s*tecnica|bbtt|especificaci|terminos de referencia|\btdr\b/.test(s)) return 2;
+  if (meta.tag) return 3;
+  return 4;
+}
+
+// Proporción de "palabras reales o números" en un texto. Páginas de planos,
+// timbres y ruido de OCR dan valores bajos.
+function ctxCalidadTexto(t) {
+  const palabras = (t || '').split(/\s+/).filter(Boolean);
+  if (palabras.length < 8) return 0;
+  let validas = 0;
+  for (const w of palabras) {
+    const limpio = w.replace(/^[("'¿¡\[]+|[)"'.,;:!?\]]+$/g, '');
+    if (/^[a-záéíóúñü]{3,}$/i.test(limpio) || /^[\d.,%/\-]+$/.test(limpio) || /^(y|o|a|e|u|de|la|el|en|al|un|se|su|m2|m3|ml|km|kg|und|gbl|glb)$/i.test(limpio)) validas++;
+  }
+  return validas / palabras.length;
+}
+
+// Páginas de texto de un PDF nativo con pdf.js (cacheado)
+async function ctxPaginasPdfNativo(b, meta, onProgreso) {
+  const k = ctxClaveBloque(b, meta);
+  if (CTX_PAGINAS_CACHE.has(k)) return CTX_PAGINAS_CACHE.get(k);
+  if (typeof pdfjsLib === 'undefined') return [];
+  const pdf = await pdfjsLib.getDocument({ data: ctxBase64ABytes(b.source.data) }).promise;
+  const out = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    if (onProgreso && (i % 25 === 0 || i === 1)) onProgreso(`Extrayendo texto de ${meta && meta.name ? meta.name : 'PDF'} (pág. ${i} de ${pdf.numPages})…`);
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    const texto = tc.items.map(it => (it.str || '') + (it.hasEOL ? '\n' : ' ')).join('').replace(/[ \t]+/g, ' ').trim();
+    out.push({ numero: i, texto });
+  }
+  try { pdf.destroy(); } catch (_) {}
+  CTX_NPAGS_CACHE.set(k, out.length);
+  CTX_PAGINAS_CACHE.set(k, out);
+  return out;
+}
+
+// Parte un texto largo en trozos de ~maxChars (por oraciones; si no hay, corte duro)
+function ctxPartirLargo(texto, maxChars = 3000) {
+  if (texto.length <= maxChars) return [texto];
+  const out = [];
+  let buf = '';
+  for (const frase of texto.split(/(?<=[.;:!?\n])\s+/)) {
+    if (frase.length > maxChars) {
+      if (buf) { out.push(buf); buf = ''; }
+      for (let k = 0; k < frase.length; k += maxChars) out.push(frase.slice(k, k + maxChars));
+      continue;
+    }
+    if ((buf + ' ' + frase).length > maxChars && buf) { out.push(buf); buf = frase; }
+    else buf = buf ? buf + ' ' + frase : frase;
+  }
+  if (buf) out.push(buf);
+  return out;
+}
+
+// Convierte un bloque en fragmentos {pagina, totalPags, texto, orden}
+async function ctxFragmentosDeBloque(b, meta, onProgreso) {
+  let paginas = [];
+  let totalPags = null;
+  if (b.type === 'text') {
+    const t = b.text || '';
+    if (/={3,}\s*\[?\s*P[ÁA]GINA\s+\d+/i.test(t)) {
+      // Quitar el pie "=== fin de … ===" para que no ensucie la última página
+      paginas = RAG._reconstruirPaginasDesdeTexto(t.replace(/\n===\s*fin[^\n]*===\s*$/i, ''));
+      const mTot = t.match(/P[ÁA]GINA\s+\d+\s+de\s+(\d+)/i);
+      totalPags = mTot ? parseInt(mTot[1], 10) : paginas.length;
+    } else {
+      // Sin páginas: trocear por encabezados/párrafos
+      const cuerpo = t.replace(/^===[^\n]*===\n/, '').replace(/\n===\s*fin[^\n]*===\s*$/i, '');
+      const trozos = RAG._trocear(cuerpo, meta ? meta.docId : 'x', meta ? meta.name : 'texto');
+      const res = [];
+      for (const tr of trozos) for (const pz of ctxPartirLargo(tr.texto)) res.push({ pagina: null, totalPags: null, texto: pz, orden: res.length });
+      return res;
+    }
+  } else if (b.type === 'document') {
+    paginas = await ctxPaginasPdfNativo(b, meta, onProgreso);
+    totalPags = paginas.length;
+  } else {
+    return [];
+  }
+  const out = [];
+  let orden = 0;
+  for (const pg of paginas) {
+    const tp = (pg.texto || '').trim();
+    if (!tp) continue;
+    // La página es la unidad mínima (así "N de M páginas" es honesto); solo se
+    // subdividen páginas excepcionalmente largas (tablas de metrados enormes).
+    if (tp.length > 12000) {
+      for (const pz of ctxPartirLargo(tp, 12000)) out.push({ pagina: pg.numero, totalPags, texto: pz, orden: orden++ });
+    } else {
+      out.push({ pagina: pg.numero, totalPags, texto: tp, orden: orden++ });
+    }
+  }
+  return out;
+}
+
+// BM25 sobre el pool de fragmentos candidatos
+function ctxRankearBM25(frags, consulta) {
+  const qBase = [...new Set(RAG._tokenizar(consulta))].filter(t => !CTX_STOPWORDS.has(t));
+  const qSet = new Set(qBase);
+  const qTerms = RAG._expandirTerminos(qBase);
+  const qTermSet = new Set(qTerms);
+  const N = frags.length || 1;
+  const df = {};
+  let totalLen = 0;
+  for (const f of frags) {
+    const terms = RAG._tokenizar(f.texto);
+    f._len = terms.length;
+    totalLen += terms.length;
+    const tf = {};
+    for (const t of terms) if (qTermSet.has(t)) tf[t] = (tf[t] || 0) + 1;
+    f._tf = tf;
+    for (const t in tf) df[t] = (df[t] || 0) + 1;
+  }
+  const avgLen = totalLen / N || 1;
+  const k1 = 1.5, bb = 0.75;
+  for (const f of frags) {
+    let score = 0;
+    for (const t of qTerms) {
+      const fr = f._tf[t];
+      if (!fr) continue;
+      const idf = Math.log(1 + (N - df[t] + 0.5) / (df[t] + 0.5));
+      const w = qSet.has(t) ? 1 : 0.5;
+      score += w * idf * (fr * (k1 + 1)) / (fr + k1 * (1 - bb + bb * (f._len / avgLen)));
+    }
+    f.score = score;
+    delete f._tf;
+  }
+}
+
+function ctxRangosPaginas(nums) {
+  const s = [...new Set(nums.filter(n => n != null))].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    let j = i;
+    while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+    out.push(i === j ? String(s[i]) : `${s[i]}-${s[j]}`);
+    i = j;
+  }
+  return out.join(', ');
+}
+
+// Función principal. Devuelve {bloques, informe}. Si todo cabe, devuelve los mismos bloques.
+async function ajustarContextoPresupuesto(bloquesIn, opts = {}) {
+  const modelKey = (opts.modelKey && MODELS[opts.modelKey]) ? opts.modelKey : chatState.currentModel;
+  const cfg = MODELS[modelKey];
+  const provider = cfg.provider;
+  const presupuesto = ctxPresupuestoTokens(modelKey, opts);
+  const informe = { ajustado: false, modelo: cfg.label, presupuesto, totalOriginal: 0, totalFinal: 0, completos: [], parciales: [], excluidos: [], paginasRuido: 0 };
+  if (!Array.isArray(bloquesIn) || !bloquesIn.length) return { bloques: bloquesIn || [], informe };
+
+  // Quitar una nota de contexto previa (si el contexto ya venía ajustado)
+  const bloques = bloquesIn.filter(b => !(CTX_META.get(b) || {}).nota);
+
+  // 1) Estimación local
+  const items = [];
+  for (let i = 0; i < bloques.length; i++) {
+    const b = bloques[i];
+    const meta = CTX_META.get(b) || null;
+    items.push({ i, b, meta, prio: ctxPrioridad(meta), tokens: await ctxEstimarRapido(b, meta, provider) });
+  }
+  let total = items.reduce((s, it) => s + it.tokens, 0);
+  informe.totalOriginal = total;
+  const maxBytes = provider === 'google' ? CTX_MAX_BYTES_GEMINI : Infinity;
+  const bytesTotal = items.reduce((s, it) => s + ctxBytes(it.b), 0);
+  const bytesOk = bytesTotal <= maxBytes;
+  if (bytesOk && total <= presupuesto * 0.5) return { bloques: bloquesIn, informe };
+
+  // 2) Conteo exacto en Gemini para los bloques relevantes
+  if (provider === 'google' && chatState.googleApiKey) {
+    if (opts.onProgreso) opts.onProgreso('Midiendo el tamaño de los documentos…');
+    const grandes = items.filter(it => it.tokens > 2000);
+    for (let k = 0; k < grandes.length; k += 3) {
+      await Promise.all(grandes.slice(k, k + 3).map(async it => {
+        try { const n = await ctxContarExactoGemini(modelKey, it.b, it.meta); if (n) it.tokens = n; }
+        catch (e) { console.warn('[ctx] countTokens falló, uso estimación:', e.message); }
+      }));
+    }
+    total = items.reduce((s, it) => s + it.tokens, 0);
+    informe.totalOriginal = total;
+  }
+  if (bytesOk && total <= presupuesto) return { bloques: bloquesIn, informe };
+
+  // 3) Hay que ajustar
+  informe.ajustado = true;
+  const nombre = it => (it.meta && it.meta.name) || 'documento';
+  const orden = [...items].sort((a, b) => (a.prio - b.prio) || (a.tokens - b.tokens));
+  let usado = 0, bytesUsados = 0;
+  const completos = new Set();
+  const pendientes = [];
+  let cortado = false;
+  for (const it of orden) {
+    const by = ctxBytes(it.b);
+    if (it.prio === 0) { completos.add(it.i); usado += it.tokens; bytesUsados += by; continue; }
+    if (!cortado && usado + it.tokens <= presupuesto && bytesUsados + by <= maxBytes) { completos.add(it.i); usado += it.tokens; bytesUsados += by; }
+    else { cortado = true; pendientes.push(it); }
+  }
+
+  // 4) Pool de fragmentos de los documentos que no cupieron completos
+  const pool = [];
+  for (const it of pendientes) {
+    let frags = [];
+    try { frags = await ctxFragmentosDeBloque(it.b, it.meta, opts.onProgreso); }
+    catch (e) { console.warn('[ctx] no se pudo trocear', nombre(it), e); }
+    if (!frags.length) {
+      informe.excluidos.push({ name: nombre(it), motivo: it.b.type === 'document' ? 'PDF sin texto extraíble (escaneado): aplícale OCR para poder incluirlo parcialmente' : (it.b.type === 'image' ? 'imagen' : 'no se pudo procesar') });
+      continue;
+    }
+    it.totalPags = frags[0].totalPags || null;
+    it.fragsTotal = frags.length;
+    for (const f of frags) {
+      if (ctxCalidadTexto(f.texto) < 0.4) { informe.paginasRuido++; continue; }
+      f.item = it;
+      f.tokens = Math.ceil(f.texto.length / 3.2) + 12;
+      pool.push(f);
+    }
+  }
+  ctxRankearBM25(pool, opts.consulta || CTX_CONSULTA_GENERICA);
+  // Realce por prioridad documental (respuestas > BBTT > etiquetados > resto)
+  for (const f of pool) f.scoreFinal = f.score * (1 + 0.15 * (4 - f.item.prio));
+  // Primero los relevantes (score desc); luego, si sobra espacio, el resto en orden del documento
+  pool.sort((a, b) => {
+    const ra = a.scoreFinal > 0 ? 0 : 1, rb = b.scoreFinal > 0 ? 0 : 1;
+    if (ra !== rb) return ra - rb;
+    if (ra === 0) return (b.scoreFinal - a.scoreFinal) || (a.orden - b.orden) || (a.item.i - b.item.i);
+    // Sin relevancia léxica: repartir entre documentos (pág. 1 de cada uno, luego pág. 2…)
+    return (a.item.prio - b.item.prio) || (a.orden - b.orden) || (a.item.i - b.item.i);
+  });
+  const elegidos = new Map(); // item.i -> [frags]
+  for (const f of pool) {
+    if (usado + f.tokens > presupuesto || bytesUsados + f.texto.length + 40 > maxBytes) continue;
+    usado += f.tokens;
+    bytesUsados += f.texto.length + 40;
+    if (!elegidos.has(f.item.i)) elegidos.set(f.item.i, []);
+    elegidos.get(f.item.i).push(f);
+  }
+
+  // 5) Armar salida respetando el orden original
+  const salida = [];
+  for (const it of items) {
+    if (completos.has(it.i)) {
+      salida.push(it.b);
+      if (it.prio !== 0) informe.completos.push(nombre(it));
+      continue;
+    }
+    const fs = elegidos.get(it.i);
+    if (!fs || !fs.length) {
+      if (pendientes.includes(it) && !informe.excluidos.some(e => e.name === nombre(it))) {
+        informe.excluidos.push({ name: nombre(it), motivo: 'no cupo en el límite de contexto' });
+      }
+      continue;
+    }
+    fs.sort((a, b) => a.orden - b.orden);
+    const conPagina = fs[0].pagina != null;
+    const pags = conPagina ? ctxRangosPaginas(fs.map(f => f.pagina)) : '';
+    const nPags = conPagina ? new Set(fs.map(f => f.pagina)).size : fs.length;
+    const tot = conPagina ? (it.totalPags || '?') : it.fragsTotal;
+    const unidad = conPagina ? 'páginas' : 'fragmentos';
+    let txt = `=== ${nombre(it)} — EXTRACTO PARCIAL (${nPags} de ${tot} ${unidad}${conPagina ? ': ' + pags : ''}). El documento completo excede el límite de contexto; se incluyen los fragmentos más relevantes${it.b.type === 'document' ? ' (texto extraído del PDF, sin imágenes)' : ''}. ===\n`;
+    for (const f of fs) {
+      txt += conPagina ? `===== [PÁGINA ${f.pagina} de ${tot}] =====\n${f.texto}\n` : `${f.texto}\n\n`;
+    }
+    txt += `=== fin del extracto de ${nombre(it)} ===`;
+    salida.push(ctxMarcar({ type: 'text', text: txt }, { ...(it.meta || {}), parcial: true }));
+    informe.parciales.push({ name: nombre(it), paginas: pags, incluidas: nPags, total: tot, unidad });
+  }
+  informe.totalFinal = usado;
+
+  // 6) Nota para el modelo (va al inicio del contexto)
+  const lineas = [];
+  lineas.push(`NOTA DE CONTEXTO (automática): el material cargado supera el límite de entrada de ${cfg.label}${bytesOk ? '' : ' (o el tamaño máximo de envío)'}, por lo que no todos los documentos van completos.`);
+  if (informe.completos.length) lineas.push(`- Completos: ${informe.completos.join('; ')}.`);
+  for (const p of informe.parciales) lineas.push(`- Extracto parcial: ${p.name} (${p.incluidas} de ${p.total} ${p.unidad}${p.paginas ? ': ' + p.paginas : ''}).`);
+  for (const e of informe.excluidos) lineas.push(`- No incluido: ${e.name} (${e.motivo}).`);
+  lineas.push('REGLA: si un dato no aparece en lo entregado y podría estar en un documento parcial o no incluido, NO afirmes que "no se encuentra en los documentos". Di que no aparece en el extracto disponible y nombra el documento y las páginas no incluidas donde podría estar.');
+  salida.unshift(ctxMarcar({ type: 'text', text: lineas.join('\n') }, { nota: true }));
+
+  console.log('[ctx] contexto ajustado', informe);
+  return { bloques: salida, informe };
+}
+
+function ctxResumenInforme(inf) {
+  const partes = [];
+  if (inf.completos.length) partes.push(`${inf.completos.length} completo(s)`);
+  if (inf.parciales.length) partes.push(`${inf.parciales.length} parcial(es)`);
+  if (inf.excluidos.length) partes.push(`${inf.excluidos.length} fuera`);
+  return `Documentos ajustados al límite de ${inf.modelo}: ${partes.join(', ')}.`;
+}
+
+function ctxNotificarAjuste(inf) {
+  if (!inf || !inf.ajustado) return;
+  try { log(ctxResumenInforme(inf) + (inf.parciales.length ? ' Parciales: ' + inf.parciales.map(p => `${p.name} (${p.incluidas}/${p.total} ${p.unidad})`).join('; ') : ''), 'info'); } catch (_) {}
+  try { mostrarToast(ctxResumenInforme(inf), { duracion: 8000 }); } catch (_) {}
+}
+
+// Banner HTML para la vista de un análisis generado con contexto parcial
+function ctxBannerHtml(inf) {
+  if (!inf || !inf.ajustado) return '';
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const items = [];
+  for (const p of inf.parciales) items.push(`<li><strong>${esc(p.name)}</strong>: parcial, ${p.incluidas} de ${p.total} ${p.unidad}${p.paginas ? ' (' + esc(p.paginas) + ')' : ''}</li>`);
+  for (const e of inf.excluidos) items.push(`<li><strong>${esc(e.name)}</strong>: no incluido — ${esc(e.motivo)}</li>`);
+  if (inf.paginasRuido) items.push(`<li>${inf.paginasRuido} página(s) descartadas por texto ilegible (planos, timbres o ruido de OCR)</li>`);
+  return `
+      <div class="docs-changed-banner">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        <div><strong>Contexto ajustado al límite de ${esc(inf.modelo)}.</strong> No todo cupo completo; los documentos grandes entraron con sus fragmentos más relevantes para este análisis.
+          <ul style="margin:6px 0 0 18px; padding:0;">${items.join('')}</ul>
+          <div style="margin-top:4px; font-size:12px; opacity:.85;">Si falta algo, etiqueta los documentos (las Bases Técnicas y las respuestas a consultas tienen prioridad).</div>
+        </div>
+      </div>`;
+}
+
 // --- Conversión de documentos a contenido enviable a Claude ---
-async function prepararDocsParaClaude() {
+// opts: {modelKey, consulta, silencioso, onProgreso}. Devuelve el contexto ya ajustado
+// al límite del modelo; la versión completa queda en chatState.preparedContextFull.
+async function prepararDocsParaClaude(opts = {}) {
   const docsIncluidos = state.docs.filter(d => chatState.docsContextIds.has(d.id) && !d.skipped && !d.generadoDesdeMd);
-  if (!docsIncluidos.length) return [];
+  if (!docsIncluidos.length) { chatState.preparedContextFull = null; return []; }
 
   const contenidos = [];
   for (const docMeta of docsIncluidos) {
+    const nAntes = contenidos.length;
     const full = await dbGet(docMeta.id);
     if (!full || !full.blob) continue;
     const blob = full.blob;
@@ -11952,8 +12391,18 @@ async function prepararDocsParaClaude() {
     } else {
       contenidos.push({type:'text', text:`[Documento no procesable: ${name}]`});
     }
+    for (let k = nAntes; k < contenidos.length; k++) {
+      ctxMarcar(contenidos[k], { docId: docMeta.id, name, tag: docMeta.tag || '', ocr: !!(full.ocrTexto && full.ocrTexto.trim()) });
+    }
   }
-  return contenidos;
+  chatState.preparedContextFull = contenidos;
+  const modelKey = opts.modelKey || chatState.currentModel;
+  const aj = await ajustarContextoPresupuesto(contenidos, { modelKey, consulta: opts.consulta || CTX_CONSULTA_GENERICA, onProgreso: opts.onProgreso });
+  chatState.preparedContextFullDe = aj.bloques;
+  chatState._ctxModeloPreparado = modelKey;
+  chatState.ultimoAjusteContexto = aj.informe.ajustado ? aj.informe : null;
+  if (aj.informe.ajustado && !opts.silencioso) ctxNotificarAjuste(aj.informe);
+  return aj.bloques;
 }
 
 // --- Convertir un texto Markdown en un Blob PDF legible (para visualización del usuario) ---
@@ -20236,6 +20685,7 @@ function renderTabAnalisis(analisisId) {
       </div>
     `;
   }
+  if (version.contextoParcial) bannerHtml += ctxBannerHtml(version.contextoParcial);
 
   // Renderizar contenido como tarjetas pedagógicas
   let cuerpoHtml;
@@ -28195,6 +28645,9 @@ Reglas estrictas:
   return null;
 }
 
+// Factor de presupuesto por análisis para reintentos tras rechazo por tamaño
+const ANALISIS_FACTOR_CTX = {};
+
 async function generarAnalisis(analisisId) {
   const def = ANALISIS_DEFS.find(d => d.id === analisisId);
   if (!def) return;
@@ -28386,6 +28839,13 @@ async function generarAnalisis(analisisId) {
     `;
   }
 
+  // Mensaje de progreso en el pane (medición/recorte de contexto)
+  const progresoCtx = (msg) => {
+    const p = document.querySelector(`.tab-pane[data-tab-pane="${analisisId}"] .analysis-empty p`);
+    if (p) p.textContent = msg;
+  };
+  let ctxEsRAG = false;
+
   try {
     // Construir contexto: con RAG si el análisis lo define, o todos los docs si no.
     if (def.customRender === 'cubicaciones') {
@@ -28399,7 +28859,7 @@ async function generarAnalisis(analisisId) {
         return;
       }
       chatState.docsContextIds = new Set(sel);
-      chatState.preparedContext = await prepararDocsParaClaude();
+      chatState.preparedContext = await prepararDocsParaClaude({ modelKey: modeloEfectivo, silencioso: true, onProgreso: progresoCtx });
       console.log('[cubicaciones] contexto preparado:', chatState.preparedContext.length, 'bloques');
       chatState.contextDirty = true; // el contexto quedó limitado; marcar para que otros análisis lo reconstruyan
     } else if (def.ragQuery) {
@@ -28409,20 +28869,38 @@ async function generarAnalisis(analisisId) {
         const topK = def.ragTopK || 40;
         const fragmentos = RAG.buscar(def.ragQuery, topK);
         chatState.preparedContext = contextoDesdeFragmentos(fragmentos);
+        ctxEsRAG = true;
         const tks = fragmentos.reduce((s, r) => s + r.chunk.tokens, 0);
         log(`[${def.id}] RAG: ${fragmentos.length} fragmentos (~${tks} tokens) en vez de documentos completos`, 'info');
       } else {
         // Sin índice (no hay .md): respaldo al método de mandar todo
         state.docs.forEach(d => { if (!d.skipped) chatState.docsContextIds.add(d.id); });
-        chatState.preparedContext = await prepararDocsParaClaude();
+        chatState.preparedContext = await prepararDocsParaClaude({ modelKey: modeloEfectivo, silencioso: true, onProgreso: progresoCtx });
         chatState.contextDirty = false;
       }
     } else if (chatState.contextDirty || !chatState.preparedContext) {
       // Análisis aún no migrado a RAG: comportamiento original (mandar todo)
       state.docs.forEach(d => { if (!d.skipped) chatState.docsContextIds.add(d.id); });
-      chatState.preparedContext = await prepararDocsParaClaude();
+      chatState.preparedContext = await prepararDocsParaClaude({ modelKey: modeloEfectivo, silencioso: true, onProgreso: progresoCtx });
       chatState.contextDirty = false;
     }
+
+    // Ajustar el contexto al límite del modelo de ESTE análisis, priorizando los
+    // fragmentos relevantes a SU consulta (partiendo de la versión completa si existe).
+    const baseCtx = (!ctxEsRAG && chatState.preparedContextFull && chatState.preparedContextFullDe === chatState.preparedContext)
+      ? chatState.preparedContextFull
+      : (chatState.preparedContext || []);
+    const ajCtx = await ajustarContextoPresupuesto(baseCtx, {
+      modelKey: modeloEfectivo,
+      consulta: def.ragQuery || def.prompt,
+      userPrompt: def.prompt,
+      maxSalida: def.customRender ? Math.max(def.maxTokens || 0, 32768) : (def.maxTokens || 16384),
+      factor: ANALISIS_FACTOR_CTX[analisisId] || 1,
+      onProgreso: progresoCtx,
+    });
+    const ctxAnalisis = ajCtx.bloques;
+    const informeCtx = ajCtx.informe.ajustado ? ajCtx.informe : null;
+    if (informeCtx) log(`[${def.id}] ` + ctxResumenInforme(informeCtx), 'info');
 
     // ¿Hay documentos provenientes de OCR (escaneados) en el contexto?
     let hayOCRanalisis = false;
@@ -28459,8 +28937,8 @@ Reglas:
     if (provider === 'anthropic') {
       // Una sola consulta sin historial previo
       const contentBlocks = [];
-      if (chatState.preparedContext.length > 0) {
-        contentBlocks.push(...chatState.preparedContext);
+      if (ctxAnalisis.length > 0) {
+        contentBlocks.push(...ctxAnalisis);
       }
       // Si el tab usa customRender (ej: Estándar Minero pide JSON), no agregamos las reglas de tarjetas markdown
       const promptFinal = def.customRender ? def.prompt : (def.prompt + PROMPT_FORMATO_TARJETAS);
@@ -28602,7 +29080,7 @@ Reglas:
     } else if (provider === 'google') {
       const url = `${GEMINI_API_BASE}/${modelConfig.apiModel}:generateContent?key=${chatState.googleApiKey}`;
       const parts = [];
-      for (const block of chatState.preparedContext) {
+      for (const block of ctxAnalisis) {
         if (block.type === 'text') parts.push({text: block.text});
         else if (block.type === 'document') {
           parts.push({inlineData: {mimeType: block.source.media_type || 'application/pdf', data: block.source.data}});
@@ -28805,6 +29283,13 @@ Ahora continúa el JSON desde ese punto exacto. Solo emite la continuación.`
       docsHash: calcularHashDocs(),
       docsCount: docsDisponibles.length,
     };
+    if (informeCtx) {
+      nuevaVersion.contextoParcial = {
+        ajustado: true, modelo: informeCtx.modelo, completos: informeCtx.completos,
+        parciales: informeCtx.parciales, excluidos: informeCtx.excluidos, paginasRuido: informeCtx.paginasRuido,
+      };
+    }
+    delete ANALISIS_FACTOR_CTX[analisisId];
 
     // Guardar en memoria + IndexedDB
     if (!analisisState.versiones[analisisId]) analisisState.versiones[analisisId] = [];
@@ -28821,6 +29306,19 @@ Ahora continúa el JSON desde ese punto exacto. Solo emite la continuación.`
     renderTabAnalisis(analisisId);
   } catch (err) {
     console.error(err);
+    // Si aun así el modelo rechaza por tamaño (la estimación quedó corta), reintentar
+    // automáticamente con un presupuesto más estricto: 100% → 60% → 35%.
+    if (ctxEsErrorLimite(err)) {
+      const f = ANALISIS_FACTOR_CTX[analisisId] || 1;
+      const sig = f > 0.6 ? 0.6 : (f > 0.35 ? 0.35 : null);
+      if (sig) {
+        ANALISIS_FACTOR_CTX[analisisId] = sig;
+        log(`[${def.id}] El modelo rechazó el tamaño del contexto. Reintentando con ${Math.round(sig * 100)}% del presupuesto…`, 'info');
+        return generarAnalisis(analisisId);
+      }
+      delete ANALISIS_FACTOR_CTX[analisisId];
+      err = new Error('Los documentos superan el límite del modelo incluso después de recortarlos. Etiqueta las Bases Técnicas y deja fuera los tomos que no aporten a este análisis. (Detalle: ' + err.message + ')');
+    }
     const esRateLimit = err.isRateLimit || /429|rate limit/i.test(err.message);
 
     if (pane) {
@@ -36471,10 +36969,11 @@ async function cargarPropuestaVerificacion(file) {
 // =====================================================================
 // Generación: prepara contexto y llama IA por categoría
 // =====================================================================
-async function prepararContextoBases(docIds) {
+async function prepararContextoBases(docIds, opts = {}) {
   // Variante de prepararDocsParaClaude que toma IDs explícitos
   const contenidos = [];
   for (const id of docIds) {
+    const nAntes = contenidos.length;
     const full = await dbGet(id);
     if (!full || !full.blob) continue;
     const blob = full.blob;
@@ -36516,8 +37015,14 @@ async function prepararContextoBases(docIds) {
     } else {
       contenidos.push({type:'text', text:'[Documento no procesable: ' + name + ']'});
     }
+    const dMeta = (typeof state !== 'undefined' && state.docs) ? state.docs.find(d => d.id === id) : null;
+    for (let k = nAntes; k < contenidos.length; k++) {
+      ctxMarcar(contenidos[k], { docId: id, name, tag: (dMeta && dMeta.tag) || full.tag || '', ocr: !!(full.ocrTexto && full.ocrTexto.trim()) });
+    }
   }
-  return contenidos;
+  const aj = await ajustarContextoPresupuesto(contenidos, { modelKey: opts.modelKey || chatState.currentModel, consulta: opts.consulta || CTX_CONSULTA_GENERICA });
+  if (aj.informe.ajustado && !opts.silencioso) ctxNotificarAjuste(aj.informe);
+  return aj.bloques;
 }
 
 // Bloque de documento de la PROPUESTA (un solo archivo)
@@ -36542,6 +37047,12 @@ function bloqueDocPropuesta(prop) {
 async function llamarIAConContexto(systemPrompt, userPrompt, contextoBlocks) {
   const provider = MODELS[chatState.currentModel].provider;
   const cfg = MODELS[chatState.currentModel];
+  // Guarda final: nunca mandar más de lo que el modelo acepta
+  {
+    const aj = await ajustarContextoPresupuesto(contextoBlocks || [], { modelKey: chatState.currentModel, consulta: userPrompt, systemPrompt, userPrompt, maxSalida: cfg.maxTokens });
+    if (aj.informe.ajustado) ctxNotificarAjuste(aj.informe);
+    contextoBlocks = aj.bloques;
+  }
   if (provider === 'anthropic') {
     if (!chatState.apiKey) throw new Error('Falta API key de Claude');
     const contentBlocks = [...contextoBlocks, {type:'text', text: userPrompt}];
