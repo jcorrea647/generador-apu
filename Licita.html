@@ -10529,14 +10529,14 @@ function renderDocs() {
           <div class="doc-item-meta">
             <span>${sizeStr}</span>
             ${doc.tag ? `<span class="doc-tag-pill">${doc.tag}</span>` : ''}
-            ${tieneOCR ? `<span class="doc-ocr-pill" title="Texto extraído por OCR (${doc.ocrPaginas || '?'} páginas, ${doc.ocrEngine || 'tesseract'})">🔍 OCR</span>` : ''}
+            ${procPillHtml(doc)}
             ${doc.skipped ? '<span style="color:#DC2626;">⚠ solo nombre</span>' : '<span style="color:#059669;">✓ guardado</span>'}
           </div>
         </div>
         <select class="doc-item-cat" data-id="${doc.id}" title="Categoría del documento" style="font-size:11.5px;padding:4px 7px;border:1px solid var(--border);border-radius:6px;font-family:inherit;background:var(--surface);max-width:150px;">
           ${opcionesCat}
         </select>
-        ${esPDF && hasBlob ? `<button class="doc-item-ocr" data-id="${doc.id}" title="${tieneOCR ? 'Reaplicar OCR' : 'Aplicar OCR (extraer texto si es escaneado)'}">${tieneOCR ? '🔄 OCR' : '🔍 OCR'}</button>` : ''}
+        ${esPDF && hasBlob ? `<button class="doc-item-ocr doc-item-more" data-id="${doc.id}" title="Más opciones (reprocesar texto)">⋯</button>` : ''}
         ${hasBlob ? `<button class="doc-item-download" data-id="${doc.id}" title="Descargar">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
         </button>` : ''}
@@ -10603,15 +10603,8 @@ function renderDocs() {
       actualizarTamanoTotal();
     });
   });
-  list.querySelectorAll('.doc-item-ocr').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.id;
-      if (OCR_STATE.enCurso) {
-        alert('Ya hay un OCR en curso. Espera a que termine o cancélalo.');
-        return;
-      }
-      await reaplicarOCR(id);
-    });
+  list.querySelectorAll('.doc-item-more').forEach(btn => {
+    btn.addEventListener('click', (ev) => { ev.stopPropagation(); procAbrirMenuDoc(btn); });
   });
   list.querySelectorAll('.doc-item-download').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -14794,7 +14787,7 @@ async function dbGetAllAnalisisDeLicitacion(licId) {
 
 // Hash simple para detectar cambios en docs (lista de IDs de docs + size + tag)
 function calcularHashDocs() {
-  const docs = state.docs.filter(d => !d.skipped).map(d => `${d.id}:${d.size}:${d.tag || ''}`).sort();
+  const docs = state.docs.filter(d => !d.skipped).map(d => `${d.id}:${d.size}:${d.tag || ''}${d.rev ? ':r' + d.rev : ''}`).sort();
   return docs.join('|');
 }
 
@@ -31531,45 +31524,12 @@ $('newLicModalSave').addEventListener('click', async () => {
   newLicTempDocs = [];
   await renderPanelLicitaciones();
 
-  // Lanzar OCR completo en segundo plano (no se espera; corre tras cerrar el modal).
+  // Revisión de texto completa en segundo plano, por la cola secuencial
+  // (OCR solo en las páginas escaneadas; avisa si algo queda esperando).
   if (docsParaOCRcompleto.length > 0) {
-    Promise.resolve().then(async () => {
-      for (const rec of docsParaOCRcompleto) {
-        try {
-          if (OCR_STATE.enCurso) continue; // no solapar dos OCR
-          // Obtener el registro completo con el binario real desde Storage
-          const full = await dbGet(rec.id);
-          if (!full || !full.blob || !(full.blob instanceof Blob)) continue;
-          const det = await detectarPDFescaneado(full.blob);
-          if (!det.esEscaneado) continue;
-          mostrarToast(`Procesando texto completo de "${full.name}" en segundo plano (${det.totalPaginas} pág)…`, { duracion: 5000 });
-          const res = await ocrearPDF(full.blob, { docId: full.id, docNombre: full.name });
-          full.ocrTexto = res.texto;
-          full.ocrPaginasDetalle = res.paginas;
-          full.ocrAt = new Date().toISOString();
-          full.ocrEngine = res.engine;
-          full.ocrIdioma = res.idioma;
-          full.ocrPaginas = res.paginas.length;
-          full.ocrVersion = OCR_VERSION;
-          await dbPut(full);
-          const rec_name = full.name; const rec_id = full.id;
-          // Refrescar en memoria si el doc pertenece a la licitación abierta
-          if (typeof state !== 'undefined' && state.docs) {
-            const idx = state.docs.findIndex(d => d.id === rec_id);
-            if (idx >= 0) { state.docs[idx] = full; if (typeof renderDocs === 'function') renderDocs(); }
-          }
-          // Invalidar el índice RAG para que reindexe con el texto OCR completo
-          if (typeof RAG !== 'undefined') RAG.indexado = false;
-          mostrarToast(`✓ Texto completo listo: "${rec_name}" (${res.paginas.length} páginas)`, { duracion: 5000 });
-        } catch (e) {
-          if (e.message && e.message.includes('cancelado')) {
-            mostrarToast(`OCR de "${rec.name}" cancelado.`, { duracion: 4000 });
-          } else {
-            console.error('[OCR bg] error en', rec.name, e);
-          }
-        }
-      }
-    });
+    const res = docsParaOCRcompleto.map(rec => ({ nombre: rec.name, res: encolarProcesamientoDoc(rec, { silencioso: true }) }));
+    const n = res.filter(r => r.res.estado === 'inicia' || r.res.estado === 'en_cola').length;
+    if (n > 1) mostrarToast(`${n} PDF(s) quedaron en cola para leer su texto completo: se procesan uno por uno, en orden.`, { duracion: 8000 });
   }
 });
 
@@ -31649,6 +31609,7 @@ async function cargarDocsDeLicitacion(licId) {
     state.docs = all.filter(r => r && r.id && r.id.startsWith(`doc_${licId}_`));
     renderDocs();
     actualizarTamanoTotal();
+    procEncolarPendientesDeLicitacion();
   } catch (e) { /* noop */ }
 }
 
@@ -31693,7 +31654,43 @@ handleDocs = async function(files) {
     return;
   }
   // Mismo flujo pero con id prefijado por licitación
+  const encolados = [];     // [{nombre, res}] para un aviso único al final
+  const omitidos = [];
   for (const file of files) {
+    // ¿Ya existe un documento con el mismo nombre? Preguntar si se reemplaza y reprocesa.
+    const existente = state.docs.find(d => (d.name || '').toLowerCase() === file.name.toLowerCase());
+    if (existente) {
+      const ok = confirm(`"${file.name}" ya está cargado en esta licitación.\n\n¿Quieres reemplazarlo por este archivo y reprocesarlo?\n\nAceptar: reemplaza el archivo y lo vuelve a procesar (mantiene su etiqueta y categoría).\nCancelar: no se agrega.`);
+      if (!ok) { omitidos.push(file.name); continue; }
+      if (file.size > TAMANO_MAX_MB * 1024 * 1024) {
+        alert(`"${file.name}" excede ${TAMANO_MAX_MB} MB; no se puede reemplazar.`);
+        continue;
+      }
+      if (DOC_PROC.activoId === existente.id) {
+        alert(`"${file.name}" se está procesando en este momento. Espera a que termine (o páusalo desde el aviso de OCR) y vuelve a subirlo.`);
+        continue;
+      }
+      DOC_PROC.cola = DOC_PROC.cola.filter(x => x !== existente.id);
+      const arrayBufferR = await file.arrayBuffer();
+      const recR = {
+        id: existente.id, name: file.name, size: file.size, type: file.type || '',
+        tag: existente.tag || '', categoria: existente.categoria, fechaCarga: new Date().toISOString(),
+        skipped: false, rev: (existente.rev || 0) + 1,
+        blob: new Blob([arrayBufferR], {type: file.type || 'application/octet-stream'}),
+      };
+      if (recR.categoria === undefined) delete recR.categoria;
+      await dbPut(recR);
+      try { await dbDelete('ocrprog_' + existente.id); } catch (_) {}
+      const idxR = state.docs.findIndex(d => d.id === existente.id);
+      if (idxR >= 0) state.docs[idxR] = recR;
+      if (typeof chatState !== 'undefined') { chatState.docsContextIds.add(recR.id); chatState.contextDirty = true; }
+      try { CTX_TOKENS_CACHE.clear(); CTX_PAGINAS_CACHE.clear(); CTX_NPAGS_CACHE.clear(); } catch (_) {}
+      if (typeof RAG !== 'undefined') RAG.indexado = false;
+      log(`Doc reemplazado: ${file.name} (${(file.size/1024/1024).toFixed(2)} MB)`, 'ok');
+      encolados.push({ nombre: file.name, res: encolarProcesamientoDoc(recR, { forzar: true, silencioso: true }) });
+      renderDocs();
+      continue;
+    }
     const id = `doc_${APP_STATE.currentLicId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (file.size > TAMANO_MAX_MB * 1024 * 1024) {
       log(`Doc "${file.name}" excede ${TAMANO_MAX_MB} MB. Solo se guardará el nombre.`, 'err');
@@ -31713,11 +31710,16 @@ handleDocs = async function(files) {
         chatState.contextDirty = true;
       }
       log(`Doc guardado: ${file.name} (${(file.size/1024/1024).toFixed(2)} MB)`, 'ok');
+      // Revisión automática del texto (OCR solo si hay páginas escaneadas), en cola
+      encolados.push({ nombre: file.name, res: encolarProcesamientoDoc(record, { silencioso: true }) });
+      renderDocs();
     }
   }
   renderDocs();
   actualizarTamanoTotal();
   docInput.value = '';
+  procAvisarLote(encolados);
+  if (omitidos.length) log(`No se agregó (ya existía): ${omitidos.join(', ')}`, 'info');
 };
 
 // Guardar chat cada vez que se envía un mensaje
@@ -36371,13 +36373,16 @@ function renderOCRProgress() {
     <div class="ocr-banner-body">
       <div class="ocr-banner-title">OCR en curso: <strong>${escapeHtml(OCR_STATE.docNombre)}</strong></div>
       <div class="ocr-banner-bar"><div class="ocr-banner-fill" style="width:${pct}%;"></div></div>
-      <div class="ocr-banner-status">Página ${OCR_STATE.paginaActual} de ${OCR_STATE.totalPaginas} · ${pct}%</div>
+      <div class="ocr-banner-status">${OCR_STATE.desdeCola ? 'Página escaneada' : 'Página'} ${OCR_STATE.paginaActual} de ${OCR_STATE.totalPaginas} · ${pct}%${(typeof DOC_PROC !== 'undefined' && DOC_PROC.cola.length) ? ` · ${DOC_PROC.cola.length} en cola` : ''}</div>
     </div>
-    <button class="ocr-banner-cancel" id="ocrCancelBtn">Cancelar</button>
+    <button class="ocr-banner-cancel" id="ocrCancelBtn">${OCR_STATE.desdeCola ? 'Pausar' : 'Cancelar'}</button>
   `;
   const btn = document.getElementById('ocrCancelBtn');
   if (btn) btn.addEventListener('click', () => {
-    if (confirm('¿Cancelar el OCR? El texto procesado hasta ahora se descartará.')) cancelarOCR();
+    const msg = OCR_STATE.desdeCola
+      ? `¿Pausar el OCR de "${OCR_STATE.docNombre}"?\n\nLo avanzado queda guardado y puedes retomarlo desde ⋯ → Retomar OCR.` + ((typeof DOC_PROC !== 'undefined' && DOC_PROC.cola.length) ? `\nLos ${DOC_PROC.cola.length} documento(s) en cola seguirán procesándose.` : '')
+      : '¿Cancelar el OCR? El texto procesado hasta ahora se descartará.';
+    if (confirm(msg)) cancelarOCR();
   });
 }
 
@@ -36419,6 +36424,354 @@ async function procesarOCRDocSiCorresponde(doc) {
     }
     return null;
   }
+}
+
+// =====================================================================
+// PROCESAMIENTO DE TEXTO DE DOCUMENTOS — automático, por página y en cola
+// =====================================================================
+// - El sistema decide: se revisan TODAS las páginas del PDF; solo las que no
+//   tienen texto digital pasan por OCR (en tomos mixtos se combina ambos).
+// - Cola secuencial: un documento a la vez, en orden de llegada. Si algo queda
+//   esperando, se avisa al usuario.
+// - Reanudable: cada pocas páginas se guarda un punto de control
+//   (registro "ocrprog_<docId>"); si se cierra el navegador, continúa desde ahí.
+const PROC_VERSION = 2;
+const PROC_UMBRAL_CHARS = 50;      // menos caracteres que esto en una página = escaneada
+const PROC_CHECKPOINT_CADA = 5;    // páginas OCR entre puntos de control
+const DOC_PROC = {
+  cola: [],                // ids en espera, en orden
+  objs: new Map(),         // id -> objeto doc (sigue procesando aunque cambies de licitación)
+  forzar: new Set(),       // ids a reprocesar desde cero
+  activoId: null,
+  fase: '',                // texto de la fase actual del doc activo
+  corriendo: false,
+};
+
+function procEsPDFProcesable(doc) {
+  return !!(doc && !doc.skipped && !doc.generadoDesdeMd && /\.pdf$/i.test(doc.name || '') && doc.blob);
+}
+function procPosicionEnCola(id) { const i = DOC_PROC.cola.indexOf(id); return i < 0 ? 0 : i + 1; }
+function procRenderDocsSeguro() { try { if (typeof renderDocs === 'function' && $('docList')) renderDocs(); } catch (_) {} }
+
+// Encola un documento. opts: {forzar, silencioso}. Devuelve {estado, posicion}.
+function encolarProcesamientoDoc(docOrId, opts = {}) {
+  const doc = typeof docOrId === 'string' ? (state.docs || []).find(d => d.id === docOrId) : docOrId;
+  if (!procEsPDFProcesable(doc)) return { estado: 'no-aplica' };
+  const id = doc.id;
+  if (DOC_PROC.activoId === id) {
+    if (!opts.silencioso) mostrarToast(`"${doc.name}" ya se está procesando.`, { duracion: 4000 });
+    return { estado: 'activo' };
+  }
+  if (DOC_PROC.cola.includes(id)) {
+    if (opts.forzar) DOC_PROC.forzar.add(id);
+    if (!opts.silencioso) mostrarToast(`"${doc.name}" ya está en cola (posición ${procPosicionEnCola(id)}). Se procesará cuando terminen los anteriores.`, { duracion: 5000 });
+    return { estado: 'en_cola', posicion: procPosicionEnCola(id) };
+  }
+  const hayEspera = DOC_PROC.corriendo || DOC_PROC.cola.length > 0 || (typeof OCR_STATE !== 'undefined' && OCR_STATE.enCurso);
+  DOC_PROC.cola.push(id);
+  DOC_PROC.objs.set(id, doc);
+  if (opts.forzar) DOC_PROC.forzar.add(id);
+  const posicion = DOC_PROC.cola.length;
+  if (!opts.silencioso && hayEspera) {
+    mostrarToast(`"${doc.name}" quedó en cola (posición ${posicion}). Los documentos se procesan uno por uno, en el orden en que llegaron.`, { duracion: 7000 });
+  }
+  procRenderDocsSeguro();
+  procCorrerCola();
+  return { estado: hayEspera ? 'en_cola' : 'inicia', posicion };
+}
+
+// Mensaje único cuando se encolan varios documentos a la vez
+function procAvisarLote(resultados) {
+  const inicia = resultados.filter(r => r.res.estado === 'inicia').map(r => r.nombre);
+  const enCola = resultados.filter(r => r.res.estado === 'en_cola').map(r => r.nombre);
+  if (!enCola.length) return;
+  const partes = [];
+  if (inicia.length) partes.push(`Procesando "${inicia[0]}".`);
+  partes.push(enCola.length === 1
+    ? `"${enCola[0]}" quedó en cola y se procesará a continuación.`
+    : `${enCola.length} documentos quedaron en cola (${enCola.map(n => '"' + n + '"').join(', ')}) y se procesarán uno por uno, en orden.`);
+  mostrarToast(partes.join(' '), { duracion: 9000 });
+}
+
+async function procCorrerCola() {
+  if (DOC_PROC.corriendo) return;
+  DOC_PROC.corriendo = true;
+  try {
+    while (DOC_PROC.cola.length) {
+      // Si hay un OCR ajeno a la cola (lectura de portada al crear licitación), esperar
+      while (typeof OCR_STATE !== 'undefined' && OCR_STATE.enCurso) await new Promise(r => setTimeout(r, 1000));
+      const id = DOC_PROC.cola.shift();
+      const doc = DOC_PROC.objs.get(id);
+      if (!doc) continue;
+      DOC_PROC.activoId = id;
+      DOC_PROC.fase = 'Leyendo texto…';
+      procRenderDocsSeguro();
+      try {
+        await procesarTextoDocumento(doc, { forzar: DOC_PROC.forzar.has(id) });
+      } catch (e) {
+        if (e && e.message === 'OCR cancelado por el usuario') {
+          mostrarToast(`OCR de "${doc.name}" pausado. Lo avanzado quedó guardado: retómalo desde ⋯ → Retomar OCR.`, { duracion: 7000 });
+        } else {
+          console.error('[proc] error procesando', doc.name, e);
+          doc.procError = (e && e.message) || 'error';
+          mostrarToast(`No se pudo procesar "${doc.name}": ${doc.procError}`, { duracion: 7000 });
+        }
+      } finally {
+        DOC_PROC.forzar.delete(id);
+        DOC_PROC.objs.delete(id);
+        DOC_PROC.activoId = null;
+        DOC_PROC.fase = '';
+        procRenderDocsSeguro();
+      }
+    }
+  } finally {
+    DOC_PROC.corriendo = false;
+  }
+}
+
+// Actualiza campos de un registro SIN volver a subir el binario (evita re-subir PDFs de 30+ MB)
+async function procGuardarCampos(docId, campos) {
+  const { data, error } = await supa().from('kv_store')
+    .select('data').eq('user_id', TEAM_ID).eq('id', String(docId)).maybeSingle();
+  if (error) throw error;
+  if (!data || !data.data) throw new Error('registro no encontrado');
+  const nuevo = { ...data.data };
+  for (const k in campos) {
+    if (campos[k] === undefined) delete nuevo[k];
+    else nuevo[k] = campos[k];
+  }
+  const owner_id = await _ownerDeRegistro(String(docId));
+  const { error: e2 } = await supa().from('kv_store')
+    .upsert({ user_id: TEAM_ID, id: String(docId), data: nuevo, owner_id }, { onConflict: 'user_id,id' });
+  if (e2) throw e2;
+}
+
+// OCR de un subconjunto de páginas (reutiliza un solo worker de Tesseract)
+async function procOcrPaginas(pdf, numeros, opts = {}) {
+  if (typeof Tesseract === 'undefined') throw new Error('Tesseract.js no cargado');
+  OCR_STATE.enCurso = true;
+  OCR_STATE.cancelado = false;
+  OCR_STATE.totalPaginas = opts.totalEscaneadas || numeros.length;
+  OCR_STATE.paginaActual = opts.yaHechas || 0;
+  OCR_STATE.docId = opts.docId || null;
+  OCR_STATE.docNombre = opts.docNombre || '';
+  OCR_STATE.desdeCola = true;
+  const worker = await Tesseract.createWorker(['spa', 'eng'], 1, {});
+  try {
+    let k = 0;
+    for (const n of numeros) {
+      if (OCR_STATE.cancelado) throw new Error('OCR cancelado por el usuario');
+      const page = await pdf.getPage(n);
+      const viewport = page.getViewport({ scale: 2.5 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, viewport.width, viewport.height);
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      const { data } = await worker.recognize(canvas);
+      canvas.width = 0; canvas.height = 0;
+      k++;
+      OCR_STATE.paginaActual = (opts.yaHechas || 0) + k;
+      if (opts.onPagina) await opts.onPagina(n, (data.text || '').trim(), k);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  } finally {
+    try { await worker.terminate(); } catch (_) {}
+    OCR_STATE.enCurso = false;
+    OCR_STATE.paginaActual = 0;
+    OCR_STATE.desdeCola = false;
+  }
+}
+
+// Procesa un PDF: detecta página por página y aplica OCR solo donde hace falta.
+async function procesarTextoDocumento(doc, { forzar = false } = {}) {
+  const full = await dbGet(doc.id);
+  if (!full || !(full.blob instanceof Blob)) throw new Error('no se pudo leer el archivo');
+  if (typeof pdfjsLib === 'undefined') throw new Error('PDF.js no cargado');
+  const pdf = await pdfjsLib.getDocument({ data: await full.blob.arrayBuffer() }).promise;
+  const total = pdf.numPages;
+
+  // 1) Texto digital de cada página
+  const digital = [];
+  for (let i = 1; i <= total; i++) {
+    if (i === 1 || i % 20 === 0) DOC_PROC.fase = `Revisando páginas ${i}/${total}…`;
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    digital.push(tc.items.map(it => (it.str || '') + (it.hasEOL ? '\n' : ' ')).join('').replace(/[ \t]+/g, ' ').trim());
+  }
+  const escaneadas = [];
+  for (let i = 1; i <= total; i++) if (digital[i - 1].replace(/\s+/g, '').length < PROC_UMBRAL_CHARS) escaneadas.push(i);
+
+  const base = { procVersion: PROC_VERSION, procAt: new Date().toISOString(), procPaginas: total, procPausado: undefined, procError: undefined };
+  const limpiarOCR = { ocrTexto: undefined, ocrPaginasDetalle: undefined, ocrAt: undefined, ocrEngine: undefined, ocrIdioma: undefined, ocrPaginas: undefined, ocrVersion: undefined, ocrPaginasEscaneadas: undefined };
+  let campos;
+
+  if (escaneadas.length === 0) {
+    // Documento 100% digital: la IA recibe el PDF original (más fiel que cualquier OCR)
+    campos = { ...base, ...limpiarOCR, textoTipo: 'digital' };
+  } else if (!forzar && full.ocrTexto && !full.procVersion) {
+    // OCR antiguo (documento completo) de un PDF que sí tiene páginas escaneadas:
+    // se conserva tal cual para no repetir horas de OCR.
+    campos = { ...base, textoTipo: escaneadas.length === total ? 'escaneado' : 'mixto', ocrPaginasEscaneadas: escaneadas.length };
+  } else {
+    const progId = 'ocrprog_' + doc.id;
+    let prog = null;
+    if (forzar) { try { await dbDelete(progId); } catch (_) {} }
+    else {
+      try { prog = await dbGet(progId); } catch (_) {}
+      if (prog && (prog.total !== total || prog.version !== PROC_VERSION)) prog = null;
+    }
+    const hechas = new Map(prog && Array.isArray(prog.paginas) ? prog.paginas.map(p => [p.numero, p.texto]) : []);
+    const pendientes = escaneadas.filter(n => !hechas.has(n));
+    const guardarAvance = async () => {
+      try {
+        await dbPut({ id: progId, docId: doc.id, total, version: PROC_VERSION, at: new Date().toISOString(),
+          paginas: [...hechas.entries()].map(([numero, texto]) => ({ numero, texto })) });
+      } catch (e) { console.warn('[proc] no se pudo guardar el avance:', e); }
+    };
+    if (pendientes.length) {
+      DOC_PROC.fase = 'OCR';
+      try {
+        await procOcrPaginas(pdf, pendientes, {
+          docId: doc.id, docNombre: doc.name,
+          totalEscaneadas: escaneadas.length, yaHechas: escaneadas.length - pendientes.length,
+          onPagina: async (n, texto, k) => {
+            hechas.set(n, texto);
+            if (k % PROC_CHECKPOINT_CADA === 0) await guardarAvance();
+          },
+        });
+      } catch (e) {
+        await guardarAvance();
+        if (e && e.message === 'OCR cancelado por el usuario') {
+          doc.procPausado = true;
+          doc.ocrAvance = { hechas: hechas.size, total: escaneadas.length };
+          try { await procGuardarCampos(doc.id, { procPausado: true, ocrAvance: doc.ocrAvance }); } catch (_) {}
+        }
+        throw e;
+      }
+    }
+    // Combinar: texto digital donde lo hay, OCR donde no
+    const detalle = [];
+    let texto = '';
+    for (let i = 1; i <= total; i++) {
+      const t = hechas.has(i) ? hechas.get(i) : digital[i - 1];
+      detalle.push({ numero: i, texto: t });
+      texto += `\n\n===== [PÁGINA ${i} de ${total}] =====\n${t}`;
+    }
+    campos = {
+      ...base, textoTipo: escaneadas.length === total ? 'escaneado' : 'mixto',
+      ocrTexto: texto.trim(), ocrPaginasDetalle: detalle, ocrAt: new Date().toISOString(),
+      ocrEngine: 'tesseract+pdfjs', ocrIdioma: 'spa+eng', ocrPaginas: total, ocrVersion: OCR_VERSION,
+      ocrPaginasEscaneadas: escaneadas.length, ocrAvance: undefined,
+    };
+    try { await dbDelete(progId); } catch (_) {}
+  }
+
+  try { pdf.destroy(); } catch (_) {}
+  await procGuardarCampos(doc.id, campos);
+  for (const k in campos) { if (campos[k] === undefined) delete doc[k]; else doc[k] = campos[k]; }
+  delete doc.ocrAvance; delete doc.procPausado; delete doc.procError;
+  // Si la licitación abierta tiene otra instancia del mismo doc, sincronizarla
+  const enVista = (state.docs || []).find(d => d.id === doc.id);
+  if (enVista && enVista !== doc) {
+    for (const k in campos) { if (campos[k] === undefined) delete enVista[k]; else enVista[k] = campos[k]; }
+    delete enVista.ocrAvance; delete enVista.procPausado; delete enVista.procError;
+  }
+
+  // Invalidar contextos e índices que dependían del texto anterior
+  if (typeof chatState !== 'undefined') chatState.contextDirty = true;
+  if (typeof RAG !== 'undefined') RAG.indexado = false;
+  try { CTX_TOKENS_CACHE.clear(); CTX_PAGINAS_CACHE.clear(); CTX_NPAGS_CACHE.clear(); } catch (_) {}
+
+  const msg = campos.textoTipo === 'digital'
+    ? `"${doc.name}" listo: texto digital (${total} págs), no necesita OCR.`
+    : (campos.textoTipo === 'escaneado'
+      ? `"${doc.name}" listo: escaneado, OCR aplicado a ${total} págs.`
+      : `"${doc.name}" listo: mixto, OCR en ${escaneadas.length} de ${total} págs.`);
+  log(msg, 'ok');
+  mostrarToast(msg + (DOC_PROC.cola.length ? ` Quedan ${DOC_PROC.cola.length} en cola.` : ''), { duracion: 6000 });
+}
+
+// Pastilla de estado de procesamiento para cada documento
+function procPillHtml(doc) {
+  if (!/\.pdf$/i.test(doc.name || '') || doc.skipped || doc.generadoDesdeMd) return '';
+  const pill = (txt, color, extra = '') => `<span class="doc-proc-pill" ${extra} style="font-size:11px;font-weight:600;padding:1px 8px;border-radius:10px;border:1px solid ${color};color:${color};white-space:nowrap;">${txt}</span>`;
+  if (DOC_PROC.activoId === doc.id) return pill('🔍 Procesando…', '#B45309', `data-proc-activo="${doc.id}"`);
+  const pos = procPosicionEnCola(doc.id);
+  if (pos) return pill(`⏳ En cola (${pos})`, '#6B7280', 'title="Se procesa cuando terminen los documentos anteriores"');
+  if (doc.procPausado) return pill(`⏸ OCR pausado${doc.ocrAvance ? ` (${doc.ocrAvance.hechas}/${doc.ocrAvance.total})` : ''}`, '#B45309', 'title="Retómalo desde el menú ⋯"');
+  if (doc.procError) return pill('⚠ No se pudo procesar', '#DC2626', `title="${escapeHtml(doc.procError)}"`);
+  if (doc.textoTipo === 'digital') return pill('📄 Texto digital', '#059669', 'title="El PDF tiene texto seleccionable: no necesita OCR"');
+  if (doc.textoTipo === 'escaneado') return pill('🔍 Escaneado · OCR listo', '#059669');
+  if (doc.textoTipo === 'mixto') return pill(`🔍 Mixto · OCR en ${doc.ocrPaginasEscaneadas || '?'} págs`, '#059669', `title="${doc.ocrPaginasEscaneadas || '?'} de ${doc.procPaginas || '?'} páginas eran escaneadas"`);
+  if (doc.ocrTexto) return pill('🔍 OCR listo', '#059669');
+  return pill('⏳ Pendiente', '#6B7280', 'title="Se revisará automáticamente"');
+}
+
+// Actualiza en vivo la pastilla del documento activo (sin re-renderizar la lista)
+setInterval(() => {
+  const el = document.querySelector('[data-proc-activo]');
+  if (!el) return;
+  let txt = '🔍 ' + (DOC_PROC.fase || 'Procesando…');
+  if (typeof OCR_STATE !== 'undefined' && OCR_STATE.enCurso && OCR_STATE.docId === DOC_PROC.activoId) {
+    txt = `🔍 OCR ${OCR_STATE.paginaActual}/${OCR_STATE.totalPaginas}`;
+  }
+  if (el.textContent !== txt) el.textContent = txt;
+}, 700);
+
+// Menú ⋯ de cada documento PDF
+function procAbrirMenuDoc(btn) {
+  procCerrarMenuDoc();
+  const id = btn.dataset.id;
+  const doc = (state.docs || []).find(d => d.id === id);
+  if (!doc) return;
+  const ocupado = DOC_PROC.activoId === id || DOC_PROC.cola.includes(id);
+  const items = [];
+  if (doc.procPausado) items.push({ acc: 'retomar', txt: '▶ Retomar OCR', sub: 'Continúa desde la última página procesada' });
+  items.push({ acc: 'reprocesar', txt: '🔄 Reprocesar desde cero', sub: 'Vuelve a leer el documento y aplica OCR solo a las páginas escaneadas' });
+  const menu = document.createElement('div');
+  menu.id = 'procMenuDoc';
+  menu.style.cssText = 'position:absolute;z-index:10001;background:var(--surface,#fff);border:1px solid var(--border,#ddd);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);padding:4px;min-width:260px;';
+  menu.innerHTML = items.map(it => `<button data-acc="${it.acc}" ${ocupado ? 'disabled' : ''} style="display:block;width:100%;text-align:left;background:none;border:none;padding:8px 10px;border-radius:6px;cursor:${ocupado ? 'not-allowed' : 'pointer'};font-family:inherit;opacity:${ocupado ? '.5' : '1'};"><div style="font-size:12.5px;font-weight:600;">${it.txt}</div><div style="font-size:11px;color:var(--text-mute,#777);">${it.sub}</div></button>`).join('')
+    + (ocupado ? '<div style="font-size:11px;color:var(--text-mute,#777);padding:6px 10px;">Este documento ya está en proceso o en cola.</div>' : '');
+  document.body.appendChild(menu);
+  const r = btn.getBoundingClientRect();
+  menu.style.top = (window.scrollY + r.bottom + 4) + 'px';
+  menu.style.left = Math.max(8, window.scrollX + r.right - 260) + 'px';
+  menu.querySelectorAll('button[data-acc]').forEach(b => b.addEventListener('click', () => {
+    const acc = b.dataset.acc;
+    procCerrarMenuDoc();
+    if (acc === 'retomar') {
+      encolarProcesamientoDoc(doc, {});
+    } else if (acc === 'reprocesar') {
+      if (!confirm(`¿Reprocesar "${doc.name}" desde cero?\n\nSe vuelve a leer el documento y se aplica OCR solo a las páginas escaneadas. El texto anterior se reemplaza.`)) return;
+      encolarProcesamientoDoc(doc, { forzar: true });
+    }
+  }));
+  setTimeout(() => document.addEventListener('click', procCerrarMenuDocFuera, true), 0);
+}
+function procCerrarMenuDocFuera(e) {
+  const m = document.getElementById('procMenuDoc');
+  if (m && !m.contains(e.target)) procCerrarMenuDoc();
+}
+function procCerrarMenuDoc() {
+  const m = document.getElementById('procMenuDoc');
+  if (m) m.remove();
+  document.removeEventListener('click', procCerrarMenuDocFuera, true);
+}
+
+// Al abrir una licitación: encolar los PDFs que nunca se revisaron con el sistema
+// nuevo o cuyo OCR quedó interrumpido (cierre del navegador). Los pausados por el
+// usuario esperan a que él los retome.
+function procEncolarPendientesDeLicitacion() {
+  const pendientes = (state.docs || []).filter(d =>
+    procEsPDFProcesable(d) && !d.procPausado && (!d.procVersion || d.procVersion < PROC_VERSION));
+  if (!pendientes.length) return;
+  const res = pendientes.map(d => ({ nombre: d.name, res: encolarProcesamientoDoc(d, { silencioso: true }) }));
+  const n = res.filter(r => r.res.estado === 'inicia' || r.res.estado === 'en_cola').length;
+  if (n) mostrarToast(`${n} documento(s) por revisar quedaron en cola: se procesan uno por uno, en orden. Solo se aplica OCR a las páginas escaneadas.`, { duracion: 8000 });
 }
 
 // === Reaplica OCR a un doc existente (sobrescribe el anterior) ===
