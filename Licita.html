@@ -23528,7 +23528,7 @@ async function descargarGanttMetodologiaExcel(secId) {
     const cCumple = ws.getCell(2, C0 + 8);
     cCumple.value = { formula: `IF(${refDur}="","",IF(${refDur}<=$G$2,"✓ Cumple plazo","✗ Excede plazo"))` };
     cCumple.font = { bold: true };
-    ws.mergeCells(2, C0 + 8, 2, Math.min(ultCol, C0 + 13));
+    ws.mergeCells(2, C0 + 8, 2, C0 + 13); // ancho fijo: con grillas cortas (hoja en meses) Math.min invertía el rango y chocaba con la celda de duración
     ws.addConditionalFormatting({ ref: `${colL(C0 + 8)}2`, rules: [
       { type: 'expression', priority: 1, formulae: [`${refDur}<=$G$2`], style: { font: { color: { argb: 'FF2E7D32' }, bold: true } } },
       { type: 'expression', priority: 2, formulae: [`${refDur}>$G$2`], style: { font: { color: { argb: ROJO }, bold: true } } },
